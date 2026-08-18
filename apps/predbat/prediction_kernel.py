@@ -31,8 +31,8 @@ from const import PREDICT_STEP, PREDBAT_MAX_CARS
 from utils import get_curve_value, find_battery_temperature_cap, in_car_slot, in_iboost_slot
 
 # Expected ABI/parity revisions of the shared library (see prediction_kernel.cpp)
-KERNEL_ABI_VERSION = 4
-KERNEL_PARITY_REVISION = 6
+KERNEL_ABI_VERSION = 5
+KERNEL_PARITY_REVISION = 7
 
 # Maximum number of cars supported by the kernel (PK_MAX_CARS in prediction_kernel.cpp)
 KERNEL_MAX_CARS = PREDBAT_MAX_CARS
@@ -82,6 +82,7 @@ class PkContext(ctypes.Structure):
         ("export_limit", ctypes.c_double),
         ("pv_ac_limit", ctypes.c_double),
         ("battery_rate_min", ctypes.c_double),
+        ("inverter_freeze_export_loss", ctypes.c_double),
         ("battery_rate_max_charge", ctypes.c_double),
         ("battery_rate_max_charge_dc", ctypes.c_double),
         ("battery_rate_max_discharge", ctypes.c_double),
@@ -662,6 +663,7 @@ def create_kernel_context(pred, static_cache=None):
         ctx.export_limit = pred.export_limit
         ctx.pv_ac_limit = pred.pv_ac_limit
         ctx.battery_rate_min = pred.battery_rate_min
+        ctx.inverter_freeze_export_loss = pred.inverter_freeze_export_loss
         ctx.battery_rate_max_charge = pred.battery_rate_max_charge
         ctx.battery_rate_max_charge_dc = pred.battery_rate_max_charge_dc
         ctx.battery_rate_max_discharge = pred.battery_rate_max_discharge
