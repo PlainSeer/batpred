@@ -388,6 +388,9 @@ class PredBat(hass.Hass, Octopus, Energidataservice, Stromligning, Fetch, Plan, 
         self.battery_loss = 1.0
         self.battery_loss_discharge = 1.0
         self.inverter_loss = 1.0
+        # Internal battery energy loss (W) seen while Freeze Export is active.
+        # This is a prediction-only model and does not change inverter control.
+        self.inverter_freeze_export_loss = max(float(self.args.get("inverter_freeze_export_loss", 0)), 0.0)
         self.inverter_hybrid = True
         self.pv_ac_limit = 0
         self.inverter_soc_reset = False
