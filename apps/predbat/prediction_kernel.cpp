@@ -42,8 +42,8 @@
 // unconditionally, so loading one against this Python segfaults on the first prediction rather than
 // falling back. Bumping makes the loader reject it and use the Python engine, which is the whole
 // point of the check.
-#define PK_ABI_VERSION 4
-#define PK_PARITY_REVISION 6
+#define PK_ABI_VERSION 5
+#define PK_PARITY_REVISION 7
 #define PK_MAX_CARS 8
 #define PK_RUN_EVERY 5 // const.py RUN_EVERY
 
@@ -173,6 +173,7 @@ struct PkContext {
     double export_limit;      // per-minute rate
     double pv_ac_limit;       // per-minute rate
     double battery_rate_min;
+    double inverter_freeze_export_loss; // W, internal battery loss while Freeze Export is active
     double battery_rate_max_charge;
     double battery_rate_max_charge_dc;
     double battery_rate_max_discharge;
@@ -714,6 +715,7 @@ static int32_t pk_run_one(const ContextStore *store, const PkScenario *s, PkResu
     const double battery_rate_max_discharge = c->battery_rate_max_discharge;
     const double battery_rate_max_export = c->battery_rate_max_export;
     const double battery_rate_min = c->battery_rate_min;
+    const double inverter_freeze_export_loss = c->inverter_freeze_export_loss;
     // PV10 de-rating of the charge rate - prediction.py:587-592. PV90 is the upside case, no de-rate.
     const double battery_rate_max_scaling = is_pv10 ? c->battery_rate_max_scaling10 : c->battery_rate_max_scaling;
     const double battery_rate_max_scaling_discharge = c->battery_rate_max_scaling_discharge;
@@ -752,6 +754,7 @@ static int32_t pk_run_one(const ContextStore *store, const PkScenario *s, PkResu
         const bool charge_window_active = charge_window_n >= 0;
         const bool export_window_active = export_window_n >= 0;
         const double export_limit_now = export_window_active ? s->export_limits[export_window_n] : 100.0;
+        const bool freeze_export_active = c->set_export_freeze && export_window_active && export_limit_now < 100.0 && (export_limit_now == 99.0 || c->set_export_freeze_only);
 
         // Find charge limit - prediction.py:609-620
         double charge_limit_n = 0;
@@ -905,11 +908,9 @@ static int32_t pk_run_one(const ContextStore *store, const PkScenario *s, PkResu
             }
         }
 
-        // Discharge freeze - prediction.py:764-768
-        if (c->set_export_freeze) {
-            if (export_window_active && export_limit_now < 100.0 && (c->set_export_freeze && (export_limit_now == 99.0 || c->set_export_freeze_only))) {
-                charge_rate_now = battery_rate_min; // 0
-            }
+        // Discharge freeze
+        if (freeze_export_active) {
+            charge_rate_now = battery_rate_min; // 0
         }
 
         // Set discharge during charge - prediction.py:770-775
@@ -1076,8 +1077,8 @@ static int32_t pk_run_one(const ContextStore *store, const PkScenario *s, PkResu
             } else {
                 if (inverter_hybrid) {
                     double charge_rate_now_dc = battery_rate_max_charge_dc;
-                    // Freeze mode - prediction.py:973-975
-                    if (c->set_export_freeze && export_window_active && export_limit_now < 100.0 && (export_limit_now == 99.0 || c->set_export_freeze_only)) {
+                    // Freeze mode
+                    if (freeze_export_active) {
                         charge_rate_now_dc = battery_rate_min; // 0
                     }
                     // Note: Python passes the un-rounded soc for the DC-rate lookup here
@@ -1165,11 +1166,19 @@ static int32_t pk_run_one(const ContextStore *store, const PkScenario *s, PkResu
             pv_ac = std::max(pv_ac - over_limit, 0.0);
         }
 
-        // Adjust battery soc - prediction.py:1060-1064
+        // Adjust battery soc
         if (battery_draw > 0) {
             soc = std::max(soc - battery_draw / battery_loss_discharge, reserve_expected);
         } else {
             soc = std::min(soc - battery_draw * battery_loss, soc_max);
+        }
+
+        // Internal, directional battery loss while Freeze Export is active. This mirrors
+        // prediction.py and deliberately does not alter battery_draw/grid energy.
+        double freeze_export_loss_step = 0.0;
+        if (freeze_export_active && inverter_freeze_export_loss > 0) {
+            freeze_export_loss_step = std::min(inverter_freeze_export_loss * step / 60000.0, std::max(soc - reserve_expected, 0.0));
+            soc -= freeze_export_loss_step;
         }
 
         // iBoost final count - prediction.py:1066-1092
@@ -1208,8 +1217,8 @@ static int32_t pk_run_one(const ContextStore *store, const PkScenario *s, PkResu
             }
         }
 
-        // Count battery cycles - prediction.py:1094-1095
-        battery_cycle = battery_cycle + std::fabs(battery_draw);
+        // Count battery cycles, including any internal Freeze Export discharge loss
+        battery_cycle = battery_cycle + std::fabs(battery_draw) + freeze_export_loss_step;
 
         // Work out left over energy after battery adjustment - prediction.py:1097-1098
         diff = get_diff(battery_draw, pv_dc, pv_ac, load_yesterday, inverter_loss, inverter_loss_recp);
