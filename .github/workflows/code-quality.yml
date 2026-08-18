@@ -40,19 +40,32 @@ jobs:
     - uses: actions/checkout@v4
       with:
         ref: ${{ github.head_ref }}
+        fetch-depth: 0
+    - name: Apply staged Freeze Export loss patch
+      shell: bash
+      run: |
+        awk '
+          /^          from pathlib import Path$/ {flag=1}
+          /^          PY$/ {flag=0}
+          flag {sub(/^          /, ""); print}
+        ' .github/workflows/freeze-export-loss-patch.yml > /tmp/freeze_patch.py
+        test -s /tmp/freeze_patch.py
+        python3 /tmp/freeze_patch.py
+        python3 -m py_compile apps/predbat/predbat.py apps/predbat/prediction.py apps/predbat/prediction_kernel.py
+        rm -f .github/workflows/freeze-export-loss-patch.yml
     - uses: mlugg/setup-zig@v2
       with:
         version: 0.16.0
     - name: Cross-build prediction kernel binaries
       run: bash apps/predbat/build_kernel_cross.sh
-    - name: Commit updated kernel binaries
+    - name: Commit Freeze Export patch and kernel binaries
       run: |
-        git add apps/predbat/prediction_kernel_lib_*.so
+        git add -A
         if git diff --cached --quiet; then
-          echo "Kernel binaries unchanged"
+          echo "No changes"
         else
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git commit -m "chore: update prediction kernel binaries for all platforms"
+          git commit -m "feat(prediction): model configurable Freeze Export battery loss"
           git push
         fi
