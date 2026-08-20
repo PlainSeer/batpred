@@ -388,6 +388,10 @@ class PredBat(hass.Hass, Octopus, Energidataservice, Stromligning, Fetch, Plan, 
         self.battery_loss = 1.0
         self.battery_loss_discharge = 1.0
         self.inverter_loss = 1.0
+        # Internal battery discharge rate (W) observed while Freeze Export is active.
+        # Prediction-only: this does not alter inverter control or house/grid energy.
+        self.inverter_freeze_export_discharge_rate = max(float(self.args.get("inverter_freeze_export_discharge_rate", 0)), 0.0)
+        self.log("Freeze Export discharge rate configured: {:.0f} W".format(self.inverter_freeze_export_discharge_rate))
         self.inverter_hybrid = True
         self.pv_ac_limit = 0
         self.inverter_soc_reset = False

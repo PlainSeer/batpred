@@ -128,6 +128,7 @@ class Prediction(PredictionBatch):
             self.iboost_rate_threshold_export = base.iboost_rate_threshold_export
             self.rate_gas = base.rate_gas
             self.inverter_loss = base.inverter_loss
+            self.inverter_freeze_export_discharge_rate = base.inverter_freeze_export_discharge_rate
             self.inverter_hybrid = base.inverter_hybrid
             self.inverter_limit = base.inverter_limit
             self.export_limit = base.export_limit
@@ -634,6 +635,7 @@ class Prediction(PredictionBatch):
         battery_rate_max_discharge = self.battery_rate_max_discharge
         battery_rate_max_export = self.battery_rate_max_export
         battery_rate_min = self.battery_rate_min
+        inverter_freeze_export_discharge_rate = self.inverter_freeze_export_discharge_rate
         carbon_intensity = self.carbon_intensity
         set_discharge_during_charge = self.set_discharge_during_charge
         battery_charge_power_curve_tuple = charge_curve_to_tuple(self.battery_charge_power_curve)
@@ -713,6 +715,7 @@ class Prediction(PredictionBatch):
             charge_window_active = charge_window_n >= 0
             export_window_active = export_window_n >= 0
             export_limit_now = export_limits[export_window_n] if export_window_active else 100.0
+            freeze_export_active = set_export_freeze and export_window_active and export_limit_now < 100.0 and (export_limit_now == 99.0 or set_export_freeze_only)
 
             # Find charge limit
             charge_limit_n = 0
@@ -1204,6 +1207,14 @@ class Prediction(PredictionBatch):
             else:
                 soc = min(soc - battery_draw * battery_loss, soc_max)
 
+            # Some inverters continue to discharge the battery internally while Freeze Export
+            # blocks normal external battery flow. Model that measured battery-side discharge
+            # directly in SoC without creating fictitious house load or grid energy.
+            freeze_export_discharge_step = 0.0
+            if freeze_export_active and inverter_freeze_export_discharge_rate > 0:
+                freeze_export_discharge_step = min(inverter_freeze_export_discharge_rate * step / 60000.0, max(soc - reserve_expected, 0))
+                soc -= freeze_export_discharge_step
+
             # Iboost finally count
             if self.iboost_enable:
                 # iBoost Solar diversion model
@@ -1232,8 +1243,8 @@ class Prediction(PredictionBatch):
                     if iboost_next > self.iboost_today:
                         iboost_running = True
 
-            # Count battery cycles
-            battery_cycle = battery_cycle + abs(battery_draw)
+            # Count battery cycles, including internal Freeze Export battery discharge
+            battery_cycle = battery_cycle + abs(battery_draw) + freeze_export_discharge_step
 
             # Work out left over energy after battery adjustment
             diff = get_diff(battery_draw, pv_dc, pv_ac, load_yesterday, inverter_loss, inverter_loss_recp)
