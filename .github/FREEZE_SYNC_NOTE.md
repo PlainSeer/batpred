@@ -1,0 +1,1 @@
+Temporary validation marker for the v8.49.2 Freeze Export discharge-rate sync branch. Remove after validation.
