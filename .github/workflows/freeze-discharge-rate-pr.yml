@@ -1,7 +1,7 @@
 name: freeze-discharge-rate-pr
 on:
   pull_request:
-    branches: [main]
+    branches: [main, validation-base-v8.49.2]
 permissions:
   contents: write
 jobs:
