@@ -42,8 +42,8 @@
 // unconditionally, so loading one against this Python segfaults on the first prediction rather than
 // falling back. Bumping makes the loader reject it and use the Python engine, which is the whole
 // point of the check.
-#define PK_ABI_VERSION 4
-#define PK_PARITY_REVISION 7
+#define PK_ABI_VERSION 5
+#define PK_PARITY_REVISION 8
 #define PK_MAX_CARS 8
 #define PK_RUN_EVERY 5 // const.py RUN_EVERY
 
@@ -169,6 +169,7 @@ struct PkContext {
     double battery_loss;
     double battery_loss_discharge;
     double inverter_loss;
+    double inverter_freeze_export_discharge_rate; // W, internal battery discharge while Freeze Export is active
     double inverter_limit;    // per-minute rate (multiplied by step in the kernel)
     double export_limit;      // per-minute rate
     double pv_ac_limit;       // per-minute rate
@@ -232,7 +233,7 @@ struct PkScenario {
     const double *charge_limit;   // kWh target per charge window
     const int32_t *charge_start;  // absolute minutes
     const int32_t *charge_end;
-    const double *export_limits;  // percent per export window (99=freeze, 100=off - see EXPORT_LIMIT_FREEZE/EXPORT_LIMIT_IDLE in const.py)
+    const double *export_limits;  // percent per export window (99=freeze, 100=off)
     const int32_t *export_start;
     const int32_t *export_end;
     double *soc_out;              // caller-allocated, n_steps entries, filled with round(soc, 3)
@@ -714,6 +715,7 @@ static int32_t pk_run_one(const ContextStore *store, const PkScenario *s, PkResu
     const double battery_rate_max_discharge = c->battery_rate_max_discharge;
     const double battery_rate_max_export = c->battery_rate_max_export;
     const double battery_rate_min = c->battery_rate_min;
+    const double inverter_freeze_export_discharge_rate = c->inverter_freeze_export_discharge_rate;
     // PV10 de-rating of the charge rate - prediction.py:587-592. PV90 is the upside case, no de-rate.
     const double battery_rate_max_scaling = is_pv10 ? c->battery_rate_max_scaling10 : c->battery_rate_max_scaling;
     const double battery_rate_max_scaling_discharge = c->battery_rate_max_scaling_discharge;
@@ -752,6 +754,7 @@ static int32_t pk_run_one(const ContextStore *store, const PkScenario *s, PkResu
         const bool charge_window_active = charge_window_n >= 0;
         const bool export_window_active = export_window_n >= 0;
         const double export_limit_now = export_window_active ? s->export_limits[export_window_n] : 100.0;
+        const bool freeze_export_active = c->set_export_freeze && export_window_active && export_limit_now < 100.0 && (export_limit_now == 99.0 || c->set_export_freeze_only);
 
         // Find charge limit - prediction.py:609-620
         double charge_limit_n = 0;
@@ -1188,6 +1191,14 @@ static int32_t pk_run_one(const ContextStore *store, const PkScenario *s, PkResu
             soc = std::min(soc - battery_draw * battery_loss, soc_max);
         }
 
+        // Internal, directional battery discharge while Freeze Export is active.
+        // This mirrors prediction.py and deliberately does not alter battery_draw/grid energy.
+        double freeze_export_discharge_step = 0.0;
+        if (freeze_export_active && inverter_freeze_export_discharge_rate > 0) {
+            freeze_export_discharge_step = std::min(inverter_freeze_export_discharge_rate * step / 60000.0, std::max(soc - reserve_expected, 0.0));
+            soc -= freeze_export_discharge_step;
+        }
+
         // iBoost final count - prediction.py:1066-1092
         if (c->iboost_enable) {
             // iBoost solar excess diversion model - prediction.py:1068-1078 (uses the pre-clip diff)
@@ -1225,7 +1236,7 @@ static int32_t pk_run_one(const ContextStore *store, const PkScenario *s, PkResu
         }
 
         // Count battery cycles - prediction.py:1094-1095
-        battery_cycle = battery_cycle + std::fabs(battery_draw);
+        battery_cycle = battery_cycle + std::fabs(battery_draw) + freeze_export_discharge_step;
 
         // Work out left over energy after battery adjustment - prediction.py:1097-1098
         diff = get_diff(battery_draw, pv_dc, pv_ac, load_yesterday, inverter_loss, inverter_loss_recp);
