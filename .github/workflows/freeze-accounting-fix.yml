@@ -52,7 +52,7 @@ jobs:
       - name: Verify native kernel binary
         run: |
           cd coverage
-          PREDBAT_KERNEL_REQUIRED=1 python3 ../apps/predbat/verify_kernel_binary.py
+          PREDBAT_KERNEL_REQUIRED=1 python3 ../apps/predbat/verify_kernel_binary.py ../apps/predbat/prediction_kernel_lib.so
 
       - name: Cross-build all prediction kernels
         run: bash apps/predbat/build_kernel_cross.sh
