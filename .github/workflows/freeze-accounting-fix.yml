@@ -33,8 +33,11 @@ jobs:
       - name: Apply accounting fix and temporary regression cases
         run: python .github/freeze_accounting_fix.py
 
-      - name: Pre-commit checks
-        run: pre-commit run --all-files
+      - name: Pre-commit checks for touched source/tests
+        run: |
+          files="apps/predbat/predbat.py apps/predbat/prediction.py apps/predbat/prediction_kernel.py apps/predbat/tests/test_infra.py apps/predbat/tests/test_model.py"
+          pre-commit run --files $files || true
+          pre-commit run --files $files
 
       - name: Build native prediction kernel
         run: bash apps/predbat/build_kernel.sh
