@@ -1,15 +1,14 @@
 name: freeze-accounting-fix
 
 on:
-  push:
-    branches:
-      - work/freeze-accounting-fix
+  pull_request:
 
 permissions:
   contents: write
 
 jobs:
   validate-and-squash:
+    if: github.event.pull_request.head.ref == 'work/freeze-accounting-fix'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -58,7 +57,7 @@ jobs:
       - name: Remove validation-only files and tests
         run: |
           git checkout 8aff023194e0ff0f99937847cab0457c34941d0b -- apps/predbat/tests/test_infra.py apps/predbat/tests/test_model.py
-          rm -f .github/freeze_accounting_fix.py .github/workflows/freeze-accounting-fix.yml
+          rm -f .github/freeze_accounting_fix.py .github/workflows/freeze-accounting-fix.yml .github/freeze-accounting-trigger
 
       - name: Guard final diff
         run: |
