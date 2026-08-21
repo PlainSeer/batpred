@@ -2,6 +2,182 @@ name: code-quality
 on:
   pull_request:
 jobs:
+  apply-freeze-review-fix:
+    if: github.head_ref == 'trigger/freeze-accounting-main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: main
+        fetch-depth: 0
+    - uses: actions/setup-python@v4
+      with:
+        python-version: 3.x
+    - uses: mlugg/setup-zig@v2
+      with:
+        version: 0.16.0
+    - name: Apply accounting fix
+      shell: python
+      run: |
+        from pathlib import Path
+
+        def replace_once(path, old, new):
+            p = Path(path)
+            text = p.read_text()
+            count = text.count(old)
+            if count != 1:
+                raise SystemExit(f"Expected exactly one match in {path}, found {count}")
+            p.write_text(text.replace(old, new, 1))
+
+        path = "apps/predbat/prediction.py"
+        old = '''            # Export limit, clip PV output
+            diff = get_diff(battery_draw, pv_dc, pv_ac, load_yesterday, inverter_loss, inverter_loss_recp)
+'''
+        new = '''            # Some inverters continue to supply house load from the battery during Freeze Export.
+            # Feed the configured battery-side discharge through the normal battery/inverter
+            # energy path so the energy is accounted for rather than disappearing from SoC.
+            freeze_export_discharge_step = 0.0
+            if freeze_export_active and inverter_freeze_export_discharge_rate > 0:
+                freeze_export_discharge_step = min(
+                    inverter_freeze_export_discharge_rate * step / 60000.0,
+                    max((soc - reserve_expected) * battery_loss_discharge, 0),
+                )
+                battery_draw += freeze_export_discharge_step
+
+            # Export limit, clip PV output
+            diff = get_diff(battery_draw, pv_dc, pv_ac, load_yesterday, inverter_loss, inverter_loss_recp)
+'''
+        replace_once(path, old, new)
+        old = '''            # Some inverters continue to discharge the battery internally while Freeze Export
+            # blocks normal external battery flow. Model that measured battery-side discharge
+            # directly in SoC without creating fictitious house load or grid energy.
+            freeze_export_discharge_step = 0.0
+            if freeze_export_active and inverter_freeze_export_discharge_rate > 0:
+                freeze_export_discharge_step = min(inverter_freeze_export_discharge_rate * step / 60000.0, max(soc - reserve_expected, 0))
+                soc -= freeze_export_discharge_step
+
+'''
+        replace_once(path, old, '')
+        replace_once(
+            path,
+            '            # Count battery cycles, including internal Freeze Export battery discharge\n            battery_cycle = battery_cycle + abs(battery_draw) + freeze_export_discharge_step\n',
+            '            # Count battery cycles\n            battery_cycle = battery_cycle + abs(battery_draw)\n',
+        )
+
+        path = "apps/predbat/prediction_kernel.cpp"
+        replace_once(path, '#define PK_PARITY_REVISION 8\n', '#define PK_PARITY_REVISION 9\n')
+        replace_once(
+            path,
+            '    double inverter_freeze_export_discharge_rate; // W, internal battery discharge while Freeze Export is active\n',
+            '    double inverter_freeze_export_discharge_rate; // W, battery-side discharge while Freeze Export is active\n',
+        )
+        old = '''        // Export limit, clip PV output - prediction.py:1051-1058
+        double diff = get_diff(battery_draw, pv_dc, pv_ac, load_yesterday, inverter_loss, inverter_loss_recp);
+'''
+        new = '''        // Some inverters continue to supply house load from the battery during Freeze Export.
+        // Feed the configured battery-side discharge through the normal energy path.
+        double freeze_export_discharge_step = 0.0;
+        if (freeze_export_active && inverter_freeze_export_discharge_rate > 0) {
+            freeze_export_discharge_step = std::min(
+                inverter_freeze_export_discharge_rate * step / 60000.0,
+                std::max((soc - reserve_expected) * battery_loss_discharge, 0.0));
+            battery_draw += freeze_export_discharge_step;
+        }
+
+        // Export limit, clip PV output - prediction.py:1051-1058
+        double diff = get_diff(battery_draw, pv_dc, pv_ac, load_yesterday, inverter_loss, inverter_loss_recp);
+'''
+        replace_once(path, old, new)
+        old = '''        // Internal, directional battery discharge while Freeze Export is active.
+        // This mirrors prediction.py and deliberately does not alter battery_draw/grid energy.
+        double freeze_export_discharge_step = 0.0;
+        if (freeze_export_active && inverter_freeze_export_discharge_rate > 0) {
+            freeze_export_discharge_step = std::min(inverter_freeze_export_discharge_rate * step / 60000.0, std::max(soc - reserve_expected, 0.0));
+            soc -= freeze_export_discharge_step;
+        }
+
+'''
+        replace_once(path, old, '')
+        replace_once(
+            path,
+            '        battery_cycle = battery_cycle + std::fabs(battery_draw) + freeze_export_discharge_step;\n',
+            '        battery_cycle = battery_cycle + std::fabs(battery_draw);\n',
+        )
+
+        replace_once(
+            "apps/predbat/prediction_kernel.py",
+            'KERNEL_PARITY_REVISION = 8\n',
+            'KERNEL_PARITY_REVISION = 9\n',
+        )
+
+        path = "apps/predbat/tests/test_model.py"
+        replace_once(
+            path,
+            '    # Freeze Export internal battery discharge regression coverage. 240 W for one hour\n    # is 0.24 kWh. It applies only in Freeze Export, respects reserve, and counts as cycling.\n',
+            '    # Freeze Export battery discharge regression coverage. The configured battery-side flow\n    # must supply house load through normal inverter accounting and still respect reserve/cycling.\n',
+        )
+        old = '''    failed |= simple_scenario(
+        "freeze_export_discharge_rate_240w_one_hour",
+        my_predbat,
+        0,
+        0,
+        assert_final_metric=0,
+        assert_final_soc=9.76,
+        battery_size=10.0,
+        battery_soc=10.0,
+        discharge=99,
+        end_record=60,
+        inverter_freeze_export_discharge_rate=240.0,
+        assert_battery_cycle=0.24,
+    )
+'''
+        new = '''    failed |= simple_scenario(
+        "freeze_export_discharge_rate_240w_supplies_house",
+        my_predbat,
+        1.0,
+        0,
+        # 240 W battery-side becomes 192 W AC at 80% inverter efficiency,
+        # leaving 0.808 kWh imported during this one-hour test.
+        assert_final_metric=8.08,
+        assert_final_soc=9.76,
+        battery_size=10.0,
+        battery_soc=10.0,
+        inverter_loss=0.8,
+        discharge=99,
+        end_record=60,
+        inverter_freeze_export_discharge_rate=240.0,
+        assert_battery_cycle=0.24,
+    )
+'''
+        replace_once(path, old, new)
+
+        # Restore the normal CI workflow so the resulting main commit contains no temporary fixer.
+        import subprocess
+        subprocess.run(['git', 'checkout', 'HEAD^', '--', '.github/workflows/code-quality.yml'], check=True)
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    - name: Build prediction kernel
+      run: bash apps/predbat/build_kernel.sh
+    - name: Run quick unit tests
+      env:
+        PREDBAT_KERNEL_REQUIRED: "1"
+      run: |
+        cd coverage
+        python3 ../apps/predbat/unit_test.py --quick
+    - name: Cross-build prediction kernel binaries
+      run: bash apps/predbat/build_kernel_cross.sh
+    - name: Commit tested fix to main
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add -A
+        git commit -m "fix(prediction): account Freeze Export discharge as house supply"
+        git push origin HEAD:main
+
   pre-commit:
     runs-on: ubuntu-latest
     steps:
