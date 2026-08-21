@@ -1,7 +1,8 @@
 name: freeze-export-main-fix
 
 on:
-  push:
+  pull_request:
+    types: [opened, reopened, synchronize]
     branches:
       - main
 
@@ -10,6 +11,7 @@ permissions:
 
 jobs:
   validate-and-commit:
+    if: github.head_ref == 'trigger/freeze-main-fix'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
