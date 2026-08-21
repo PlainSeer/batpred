@@ -1,0 +1,86 @@
+name: freeze-accounting-fix
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-squash:
+    if: github.event.pull_request.head.ref == 'work/freeze-accounting-fix'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/freeze-accounting-fix
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: 3.x
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pre-commit
+
+      - name: Apply accounting fix and temporary regression cases
+        run: python .github/freeze_accounting_fix.py
+
+      - name: Pre-commit checks for touched source/tests
+        run: |
+          files="apps/predbat/predbat.py apps/predbat/prediction.py apps/predbat/prediction_kernel.py apps/predbat/tests/test_infra.py apps/predbat/tests/test_model.py"
+          pre-commit run --files $files || true
+          pre-commit run --files $files
+
+      - name: Build native prediction kernel
+        run: bash apps/predbat/build_kernel.sh
+
+      - name: Run targeted model and kernel tests
+        env:
+          PREDBAT_KERNEL_REQUIRED: "1"
+        run: |
+          cd coverage
+          python3 ../apps/predbat/unit_test.py --test model --test model_kernel --test kernel_parity
+
+      - name: Verify native kernel binary
+        run: |
+          cd coverage
+          PREDBAT_KERNEL_REQUIRED=1 python3 ../apps/predbat/verify_kernel_binary.py ../apps/predbat/prediction_kernel_lib.so
+
+      - name: Cross-build all prediction kernels
+        run: bash apps/predbat/build_kernel_cross.sh
+
+      - name: Remove validation-only files and tests
+        run: |
+          git checkout 8aff023194e0ff0f99937847cab0457c34941d0b -- apps/predbat/tests/test_infra.py apps/predbat/tests/test_model.py
+          rm -f .github/freeze_accounting_fix.py .github/workflows/freeze-accounting-fix.yml .github/freeze-accounting-trigger
+
+      - name: Prepare final squashed diff
+        run: |
+          git reset --soft 8aff023194e0ff0f99937847cab0457c34941d0b
+          git add -A
+
+      - name: Guard final diff
+        run: |
+          allowed='^(apps/predbat/predbat.py|apps/predbat/prediction.py|apps/predbat/prediction_kernel.cpp|apps/predbat/prediction_kernel.py|apps/predbat/prediction_kernel_lib_[^/]+\.so)$'
+          bad=$(git diff --cached --name-only | grep -Ev "$allowed" || true)
+          if [ -n "$bad" ]; then
+            echo "Unexpected files in final diff:"
+            echo "$bad"
+            exit 1
+          fi
+          git diff --cached --name-only
+
+      - name: Commit clean validated fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix(prediction): account Freeze Export discharge as house supply"
+          git push --force origin HEAD:work/freeze-accounting-fix
