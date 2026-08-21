@@ -20,6 +20,7 @@ jobs:
     - name: Apply, test and push reviewed fix
       run: |
         if [ "${GITHUB_HEAD_REF}" = "trigger/freeze-accounting-main" ]; then
+          sed -i '/        inverter_loss=0.8,/a\        battery_rate_max_charge=0.0,' .github/freeze_fix.sh
           bash .github/freeze_fix.sh
         else
           echo "Not the temporary fixer PR; skipping"
