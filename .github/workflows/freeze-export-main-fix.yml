@@ -1,0 +1,37 @@
+name: freeze-export-main-fix
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare clean main-only fixer
+        run: |
+          git fetch origin d8e2422a43b6fdf55f168fc4d24122ac9e5b6ad1
+          git show d8e2422a43b6fdf55f168fc4d24122ac9e5b6ad1:.github/freeze_fix.sh > /tmp/freeze_fix_main.sh
+          sed -i '/# Save only the accounting source changes common/,$d' /tmp/freeze_fix_main.sh
+          sed -i '/        inverter_loss=0.8,/a\        battery_rate_max_charge=0.0,' /tmp/freeze_fix_main.sh
+          git reset --hard 8aff023194e0ff0f99937847cab0457c34941d0b
+
+      - name: Apply and validate fix
+        run: bash /tmp/freeze_fix_main.sh
+
+      - name: Commit tested fix only
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(prediction): account Freeze Export discharge as house supply"
+          git push --force origin HEAD:main
