@@ -12,6 +12,115 @@ def replace_once(path, old, new):
         raise SystemExit(f"Expected exactly one match in {path}, found {count}")
     p.write_text(text.replace(old, new, 1))
 
+# ---- Main-only integration gaps -------------------------------------------------
+# main already carries most of the Freeze Export model, but not all of the support
+# plumbing that exists on PR #4575. Add those missing pieces before running tests.
+path = "apps/predbat/predbat.py"
+replace_once(
+    path,
+    '''        self.battery_loss = 1.0
+        self.battery_loss_discharge = 1.0
+        self.inverter_loss = 1.0
+        self.inverter_hybrid = True
+''',
+    '''        self.battery_loss = 1.0
+        self.battery_loss_discharge = 1.0
+        self.inverter_loss = 1.0
+        # Battery-side discharge rate (W) observed while Freeze Export is active.
+        # Prediction-only: inverter control is unchanged and energy follows normal house/grid accounting.
+        self.inverter_freeze_export_discharge_rate = max(float(self.args.get("inverter_freeze_export_discharge_rate", 0)), 0.0)
+        self.log("Freeze Export discharge rate configured: {:.0f} W".format(self.inverter_freeze_export_discharge_rate))
+        self.inverter_hybrid = True
+''',
+)
+
+path = "apps/predbat/tests/test_infra.py"
+replace_once(
+    path,
+    '''    charge_limit_best=None,
+    inverter_loss=1.0,
+    battery_rate_max_charge=1.0,
+''',
+    '''    charge_limit_best=None,
+    inverter_loss=1.0,
+    inverter_freeze_export_discharge_rate=0.0,
+    battery_rate_max_charge=1.0,
+''',
+)
+replace_once(
+    path,
+    '''    keep=0.0,
+    keep_weight=0.5,
+    assert_keep=0.0,
+    save="best",
+''',
+    '''    keep=0.0,
+    keep_weight=0.5,
+    assert_keep=0.0,
+    assert_battery_cycle=None,
+    save="best",
+''',
+)
+replace_once(
+    path,
+    '''    my_predbat.reserve = reserve
+    my_predbat.inverter_loss = inverter_loss
+    my_predbat.battery_rate_max_charge = battery_rate_max_charge / 60.0
+''',
+    '''    my_predbat.reserve = reserve
+    my_predbat.inverter_loss = inverter_loss
+    my_predbat.inverter_freeze_export_discharge_rate = inverter_freeze_export_discharge_rate
+    my_predbat.battery_rate_max_charge = battery_rate_max_charge / 60.0
+''',
+)
+replace_once(
+    path,
+    '''    if abs(final_soc - assert_final_soc) >= 0.1:
+        if not ignore_failed:
+            print("ERROR: Final SOC {} should be {}".format(final_soc, assert_final_soc))
+        failed = True
+    if abs(final_iboost - assert_final_iboost) >= 0.1:
+''',
+    '''    if abs(final_soc - assert_final_soc) >= 0.1:
+        if not ignore_failed:
+            print("ERROR: Final SOC {} should be {}".format(final_soc, assert_final_soc))
+        failed = True
+    if assert_battery_cycle is not None and abs(battery_cycle - assert_battery_cycle) >= 0.001:
+        if not ignore_failed:
+            print("ERROR: Battery cycle {} should be {}".format(battery_cycle, assert_battery_cycle))
+        failed = True
+    if abs(final_iboost - assert_final_iboost) >= 0.1:
+''',
+)
+
+path = "apps/predbat/tests/test_kernel_parity.py"
+replace_once(
+    path,
+    '''    "inverter_hybrid",
+    "inverter_loss",
+    "inverter_limit",
+''',
+    '''    "inverter_hybrid",
+    "inverter_loss",
+    "inverter_freeze_export_discharge_rate",
+    "inverter_limit",
+''',
+)
+replace_once(
+    path,
+    '''    my_predbat.set_export_freeze = rng.choice([True, False])
+    my_predbat.set_export_freeze_only = rng.choice([True, False, False, False])
+    my_predbat.set_charge_window = rng.choice([True, True, False])
+''',
+    '''    my_predbat.set_export_freeze = rng.choice([True, False])
+    my_predbat.set_export_freeze_only = rng.choice([True, False, False, False])
+    # Exercise a non-zero value without consuming another RNG draw, preserving seeded scenarios.
+    my_predbat.inverter_freeze_export_discharge_rate = 240.0 if my_predbat.set_export_freeze else 0.0
+    my_predbat.set_charge_window = rng.choice([True, True, False])
+''',
+)
+
+# ---- Accounting fix requested in upstream review -------------------------------
 path = "apps/predbat/prediction.py"
 old = '''            # Export limit, clip PV output
             diff = get_diff(battery_draw, pv_dc, pv_ac, load_yesterday, inverter_loss, inverter_loss_recp)
@@ -93,8 +202,7 @@ replace_once(
     'KERNEL_PARITY_REVISION = 9\n',
 )
 
-# Main already contains the feature but did not carry the dedicated model tests from the PR branch.
-# Insert the regression block before the existing baseline scenarios.
+# Main did not carry the dedicated PR model tests, so insert them.
 path = "apps/predbat/tests/test_model.py"
 anchor = '''    failed = False
     failed |= simple_scenario("zero", my_predbat, 0, 0, 0, 0, with_battery=False)
@@ -184,7 +292,7 @@ bash apps/predbat/build_kernel.sh
 )
 bash apps/predbat/build_kernel_cross.sh
 
-# Save the three source changes common to main and the existing PR branch.
+# Save only the accounting source changes common to main and the existing PR branch.
 git diff --binary -- \
   apps/predbat/prediction.py \
   apps/predbat/prediction_kernel.cpp \
@@ -200,7 +308,8 @@ git fetch origin feature/freeze-export-loss
 git switch -c feature-fix origin/feature/freeze-export-loss
 git apply --3way /tmp/freeze-source-fix.patch
 
-# The PR branch already has the Freeze Export test block; update its wording/house-supply case.
+# The PR branch already has the supporting integration/tests. Update only the test
+# semantics and the now-misleading description beside the setting.
 python - <<'PY'
 from pathlib import Path
 
@@ -209,8 +318,19 @@ def replace_once(path, old, new):
     text = p.read_text()
     count = text.count(old)
     if count != 1:
-        raise SystemExit(f"Expected exactly one PR-branch test match in {path}, found {count}")
+        raise SystemExit(f"Expected exactly one PR-branch match in {path}, found {count}")
     p.write_text(text.replace(old, new, 1))
+
+path = "apps/predbat/predbat.py"
+replace_once(
+    path,
+    '''        # Internal battery discharge rate (W) observed while Freeze Export is active.
+        # Prediction-only: this does not alter inverter control or house/grid energy.
+''',
+    '''        # Battery-side discharge rate (W) observed while Freeze Export is active.
+        # Prediction-only: inverter control is unchanged and energy follows normal house/grid accounting.
+''',
+)
 
 path = "apps/predbat/tests/test_model.py"
 replace_once(
@@ -254,7 +374,7 @@ new = '''    failed |= simple_scenario(
 replace_once(path, old, new)
 PY
 
-# Rebuild and test on the actual PR branch before committing it.
+# Rebuild and test the actual PR branch before committing it.
 bash apps/predbat/build_kernel.sh
 (
   cd coverage
