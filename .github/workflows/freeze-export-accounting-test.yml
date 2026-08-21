@@ -1,0 +1,32 @@
+name: freeze-export-accounting-test
+
+on:
+  push:
+    branches:
+      - work/freeze-export-accounting
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply fix and validate
+        run: |
+          cp .github/freeze_fix_main.sh /tmp/freeze_fix_main.sh
+          git reset --hard 8aff023194e0ff0f99937847cab0457c34941d0b
+          bash /tmp/freeze_fix_main.sh
+
+      - name: Commit tested result
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(prediction): account Freeze Export discharge as house supply"
+          git push --force origin HEAD:work/freeze-export-accounting
