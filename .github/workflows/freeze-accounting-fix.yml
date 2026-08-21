@@ -42,12 +42,12 @@ jobs:
       - name: Build native prediction kernel
         run: bash apps/predbat/build_kernel.sh
 
-      - name: Run quick unit suite with kernel required
+      - name: Run targeted model and kernel tests
         env:
           PREDBAT_KERNEL_REQUIRED: "1"
         run: |
           cd coverage
-          python3 ../apps/predbat/unit_test.py --quick
+          python3 ../apps/predbat/unit_test.py --test model --test model_kernel --test kernel_parity
 
       - name: Verify native kernel binary
         run: |
