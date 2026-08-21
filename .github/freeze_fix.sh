@@ -93,6 +93,125 @@ replace_once(
     'KERNEL_PARITY_REVISION = 9\n',
 )
 
+# Main already contains the feature but did not carry the dedicated model tests from the PR branch.
+# Insert the regression block before the existing baseline scenarios.
+path = "apps/predbat/tests/test_model.py"
+anchor = '''    failed = False
+    failed |= simple_scenario("zero", my_predbat, 0, 0, 0, 0, with_battery=False)
+'''
+replacement = '''    failed = False
+    # Freeze Export battery discharge regression coverage. The configured battery-side flow
+    # must supply house load through normal inverter accounting and still respect reserve/cycling.
+    failed |= simple_scenario(
+        "freeze_export_discharge_rate_default_zero",
+        my_predbat,
+        0,
+        0,
+        assert_final_metric=0,
+        assert_final_soc=10.0,
+        battery_size=10.0,
+        battery_soc=10.0,
+        discharge=99,
+        end_record=60,
+        inverter_freeze_export_discharge_rate=0.0,
+        assert_battery_cycle=0.0,
+    )
+    failed |= simple_scenario(
+        "freeze_export_discharge_rate_240w_supplies_house",
+        my_predbat,
+        1.0,
+        0,
+        # 240 W battery-side becomes 192 W AC at 80% inverter efficiency,
+        # leaving 0.808 kWh imported during this one-hour test.
+        assert_final_metric=8.08,
+        assert_final_soc=9.76,
+        battery_size=10.0,
+        battery_soc=10.0,
+        inverter_loss=0.8,
+        discharge=99,
+        end_record=60,
+        inverter_freeze_export_discharge_rate=240.0,
+        assert_battery_cycle=0.24,
+    )
+    failed |= simple_scenario(
+        "freeze_export_discharge_rate_not_outside_freeze",
+        my_predbat,
+        0,
+        0,
+        assert_final_metric=0,
+        assert_final_soc=10.0,
+        battery_size=10.0,
+        battery_soc=10.0,
+        discharge=100,
+        end_record=60,
+        inverter_freeze_export_discharge_rate=240.0,
+        assert_battery_cycle=0.0,
+    )
+    failed |= simple_scenario(
+        "freeze_export_discharge_rate_reserve_floor",
+        my_predbat,
+        0,
+        0,
+        assert_final_metric=0,
+        assert_final_soc=4.0,
+        battery_size=10.0,
+        battery_soc=4.1,
+        reserve=4.0,
+        discharge=99,
+        end_record=60,
+        inverter_freeze_export_discharge_rate=240.0,
+        assert_battery_cycle=0.1,
+    )
+    if failed:
+        return failed
+
+    failed |= simple_scenario("zero", my_predbat, 0, 0, 0, 0, with_battery=False)
+'''
+replace_once(path, anchor, replacement)
+PY
+
+# Restore normal CI and remove this temporary runner before the real main commit.
+git checkout 8aff023194e0ff0f99937847cab0457c34941d0b -- .github/workflows/code-quality.yml
+rm -f .github/freeze_fix.sh
+
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+bash apps/predbat/build_kernel.sh
+(
+  cd coverage
+  PREDBAT_KERNEL_REQUIRED=1 python3 ../apps/predbat/unit_test.py --quick
+  python3 ../apps/predbat/verify_kernel_binary.py ../apps/predbat/prediction_kernel_lib_x86_64.so
+)
+bash apps/predbat/build_kernel_cross.sh
+
+# Save the three source changes common to main and the existing PR branch.
+git diff --binary -- \
+  apps/predbat/prediction.py \
+  apps/predbat/prediction_kernel.cpp \
+  apps/predbat/prediction_kernel.py > /tmp/freeze-source-fix.patch
+
+git config user.name "github-actions[bot]"
+git config user.email "github-actions[bot]@users.noreply.github.com"
+git add -A
+git commit -m "fix(prediction): account Freeze Export discharge as house supply"
+MAIN_FIX_SHA="$(git rev-parse HEAD)"
+
+git fetch origin feature/freeze-export-loss
+git switch -c feature-fix origin/feature/freeze-export-loss
+git apply --3way /tmp/freeze-source-fix.patch
+
+# The PR branch already has the Freeze Export test block; update its wording/house-supply case.
+python - <<'PY'
+from pathlib import Path
+
+def replace_once(path, old, new):
+    p = Path(path)
+    text = p.read_text()
+    count = text.count(old)
+    if count != 1:
+        raise SystemExit(f"Expected exactly one PR-branch test match in {path}, found {count}")
+    p.write_text(text.replace(old, new, 1))
+
 path = "apps/predbat/tests/test_model.py"
 replace_once(
     path,
@@ -134,37 +253,6 @@ new = '''    failed |= simple_scenario(
 '''
 replace_once(path, old, new)
 PY
-
-# Restore normal CI and remove this temporary runner before the real commit.
-git checkout 8aff023194e0ff0f99937847cab0457c34941d0b -- .github/workflows/code-quality.yml
-rm -f .github/freeze_fix.sh
-
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-bash apps/predbat/build_kernel.sh
-(
-  cd coverage
-  PREDBAT_KERNEL_REQUIRED=1 python3 ../apps/predbat/unit_test.py --quick
-  python3 ../apps/predbat/verify_kernel_binary.py ../apps/predbat/prediction_kernel_lib_x86_64.so
-)
-bash apps/predbat/build_kernel_cross.sh
-
-# Save only the real source/test delta for the existing PR branch.
-git diff --binary -- \
-  apps/predbat/prediction.py \
-  apps/predbat/prediction_kernel.cpp \
-  apps/predbat/prediction_kernel.py \
-  apps/predbat/tests/test_model.py > /tmp/freeze-source-fix.patch
-
-git config user.name "github-actions[bot]"
-git config user.email "github-actions[bot]@users.noreply.github.com"
-git add -A
-git commit -m "fix(prediction): account Freeze Export discharge as house supply"
-MAIN_FIX_SHA="$(git rev-parse HEAD)"
-
-git fetch origin feature/freeze-export-loss
-git switch -c feature-fix origin/feature/freeze-export-loss
-git apply --3way /tmp/freeze-source-fix.patch
 
 # Rebuild and test on the actual PR branch before committing it.
 bash apps/predbat/build_kernel.sh
