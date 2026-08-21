@@ -14,6 +14,11 @@ import sys
 import glob
 import argparse
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 from predbat import PredBat
 from tests.test_infra import TestHAInterface
 from tests.test_compute_metric import run_compute_metric_tests
@@ -22,6 +27,7 @@ from tests.test_performance_tweaks import run_performance_tweaks_tests
 from tests.test_perf import run_perf_test
 from tests.test_model import run_model_tests
 from tests.test_predict_pv_power import run_predict_pv_power_tests
+from tests.test_dashboard_device_class import test_dashboard_device_class
 from tests.test_kernel_parity import run_kernel_parity_tests, run_model_kernel_tests
 from tests.test_prediction_batch import run_prediction_batch_tests
 from tests.test_kernel_static_cache import run_kernel_static_cache_tests
@@ -70,8 +76,11 @@ from tests.test_saving_session import (
     test_saving_session_notify_config,
     test_saving_session_default_rate,
     test_saving_session_axle_conflict,
+    test_saving_session_join_service_fallback,
+    test_trigger_callback_success_signal,
     test_saving_session_auto_join_toggle,
     test_saving_session_custom_entity_no_rewrite_match,
+    test_saving_session_entity_regex_power_rename,
 )
 from tests.test_secrets import run_secrets_tests
 from tests.test_ge_cloud import test_ge_cloud
@@ -90,7 +99,7 @@ from tests.test_history_chunking import run_history_chunking_tests
 from tests.test_web_if import run_test_web_if
 from tests.test_web_chart_currency import test_rates_chart_series_names_use_currency_symbol
 from tests.test_metrics_dashboard_soc_refresh import test_soc_chart_center_text_reads_live_data
-from tests.test_web_functions import run_web_functions_tests
+from tests.test_web_functions import run_web_functions_tests, run_web_logo_image_tests
 from tests.test_web_history_table import run_web_history_table_tests
 from tests.test_web_charts import run_web_charts_tests
 from tests.test_web_chart_grouping import run_web_chart_grouping_tests
@@ -336,6 +345,7 @@ def main():
         ("perf", run_perf_test, "Performance tests", False),
         ("model", run_model_tests, "Model tests", False),
         ("predict_pv_power", run_predict_pv_power_tests, "predict_pv_power plan-interval scaling tests", False),
+        ("dashboard_device_class", test_dashboard_device_class, "Dashboard sensor device_class regression tests (#3352)", False),
         ("model_kernel", run_model_kernel_tests, "Model tests run with the C++ prediction kernel enabled", False),
         ("kernel_parity", run_kernel_parity_tests, "C++ prediction kernel vs Python engine parity tests", False),
         ("prediction_batch", run_prediction_batch_tests, "Batched prediction fan-out tests", False),
@@ -411,6 +421,7 @@ def main():
         ("web_chart_currency", test_rates_chart_series_names_use_currency_symbol, "Rates chart series names follow currency_symbols tests", False),
         ("metrics_dashboard_soc_refresh", test_soc_chart_center_text_reads_live_data, "Metrics dashboard SoC chart live-refresh tests", False),
         ("web_functions", run_web_functions_tests, "Web function unit tests", False),
+        ("web_logo_image", run_web_logo_image_tests, "Local logo image route tests (issue #4562)", False),
         ("web_annual", test_web_annual, "Annual web tab prefill tests", False),
         ("web_annual_form", test_web_annual_form, "Annual web tab form tests", False),
         ("web_annual_fast_mode", test_web_annual_fast_mode, "Annual web tab fast mode tests", False),
@@ -449,8 +460,11 @@ def main():
         ("saving_session_notify", test_saving_session_notify_config, "Saving session notification config tests", False),
         ("saving_session_default_rate", test_saving_session_default_rate, "Saving session default rate injection test", False),
         ("saving_session_axle_conflict", test_saving_session_axle_conflict, "Saving session Axle conflict avoidance test (issue #4120)", False),
+        ("saving_session_join_service_fallback", test_saving_session_join_service_fallback, "Saving session join service fallback test (issue #4548 point 3)", False),
+        ("trigger_callback_success_signal", test_trigger_callback_success_signal, "trigger_callback loopback success signal test (PR #4601 review)", False),
         ("saving_session_auto_join_toggle", test_saving_session_auto_join_toggle, "Saving session auto-join toggle test (issue #4120)", False),
         ("saving_session_custom_entity_no_rewrite_match", test_saving_session_custom_entity_no_rewrite_match, "Saving session custom entity no rewrite match test (issue #4573)", False),
+        ("saving_session_entity_regex_power_rename", test_saving_session_entity_regex_power_rename, "Saving/free session entity regex Power Down/Up rename test (issue #4548 point 2)", False),
         ("alert_feed", test_alert_feed, "Alert feed tests", False),
         ("fox_api", run_fox_api_tests, "Fox API tests", False),
         ("deye_const", run_deye_const_tests, "DEYE constants tests", False),

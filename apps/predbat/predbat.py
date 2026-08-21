@@ -35,7 +35,7 @@ import hass as hass
 import pytz
 import asyncio
 
-THIS_VERSION = "v8.49.2"
+THIS_VERSION = "v8.50.0"
 
 from download import predbat_update_move, predbat_update_download, check_install, DEFAULT_PREDBAT_REPOSITORY
 from const import MINUTE_WATT
@@ -388,10 +388,6 @@ class PredBat(hass.Hass, Octopus, Energidataservice, Stromligning, Fetch, Plan, 
         self.battery_loss = 1.0
         self.battery_loss_discharge = 1.0
         self.inverter_loss = 1.0
-        # Internal battery discharge rate (W) observed while Freeze Export is active.
-        # Prediction-only: this does not alter inverter control or house/grid energy.
-        self.inverter_freeze_export_discharge_rate = max(float(self.args.get("inverter_freeze_export_discharge_rate", 0)), 0.0)
-        self.log("Freeze Export discharge rate configured: {:.0f} W".format(self.inverter_freeze_export_discharge_rate))
         self.inverter_hybrid = True
         self.pv_ac_limit = 0
         self.inverter_soc_reset = False
@@ -589,6 +585,11 @@ class PredBat(hass.Hass, Octopus, Energidataservice, Stromligning, Fetch, Plan, 
         self.config_root = "./"
         self.inverter_can_charge_during_export = True
         self.octopus_last_joined_try = None
+        # None = not yet confirmed, True = the current Power Down join service is confirmed registered.
+        # Deliberately never set to False - a failed probe still re-tries every join rather than being
+        # cached, since the underlying result can be an ambiguous timeout, not just "not registered".
+        # See the join logic in octopus.py and TODO(#4599).
+        self.octopus_join_service_power_down = None
         self.calculate_savings_max_charge_slots = 1
         self.inverter_data_last_fetch = None
         self.octopus_url_cache_loaded = False

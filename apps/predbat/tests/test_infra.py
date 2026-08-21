@@ -146,6 +146,7 @@ class TestHAInterface:
         self.dummy_items = {}
         self.service_store_enable = False
         self.service_store = []
+        self.service_store_fail = set()
         self.db_primary = False
 
     def get_service_store(self):
@@ -189,7 +190,10 @@ class TestHAInterface:
         print("Calling service: {} {}".format(service, kwargs))
         if self.service_store_enable:
             self.service_store.append([service, kwargs])
-            return None
+            # Services in service_store_fail simulate a service that doesn't exist (e.g. testing a
+            # try-new-service-then-fall-back-to-old caller) - everything else succeeds, matching real
+            # HA behaviour for a registered service call.
+            return None if service in self.service_store_fail else True
 
         if service == "number/set_value":
             entity_id = kwargs.get("entity_id", None)
@@ -586,7 +590,6 @@ def simple_scenario(
     charge_window_best=[],
     charge_limit_best=None,
     inverter_loss=1.0,
-    inverter_freeze_export_discharge_rate=0.0,
     battery_rate_max_charge=1.0,
     battery_rate_max_charge_dc=None,
     charge_car=0,
@@ -609,7 +612,6 @@ def simple_scenario(
     keep=0.0,
     keep_weight=0.5,
     assert_keep=0.0,
-    assert_battery_cycle=None,
     save="best",
     quiet=False,
     iboost_rate_threshold=9999,
@@ -698,7 +700,6 @@ def simple_scenario(
     my_predbat.pv_ac_limit = pv_ac_limit / 60.0
     my_predbat.reserve = reserve
     my_predbat.inverter_loss = inverter_loss
-    my_predbat.inverter_freeze_export_discharge_rate = inverter_freeze_export_discharge_rate
     my_predbat.battery_rate_max_charge = battery_rate_max_charge / 60.0
     my_predbat.battery_rate_max_charge_dc = battery_rate_max_charge_dc / 60.0
     my_predbat.battery_rate_max_discharge = battery_rate_max_charge / 60.0
@@ -854,10 +855,6 @@ def simple_scenario(
     if abs(final_soc - assert_final_soc) >= 0.1:
         if not ignore_failed:
             print("ERROR: Final SOC {} should be {}".format(final_soc, assert_final_soc))
-        failed = True
-    if assert_battery_cycle is not None and abs(battery_cycle - assert_battery_cycle) >= 0.001:
-        if not ignore_failed:
-            print("ERROR: Battery cycle {} should be {}".format(battery_cycle, assert_battery_cycle))
         failed = True
     if abs(final_iboost - assert_final_iboost) >= 0.1:
         if not ignore_failed:

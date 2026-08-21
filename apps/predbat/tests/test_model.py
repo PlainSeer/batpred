@@ -20,68 +20,6 @@ def run_model_tests(my_predbat, prediction_kernel=False):
     reset_rates(my_predbat, import_rate, export_rate)
 
     failed = False
-    # Freeze Export internal battery discharge regression coverage. 240 W for one hour
-    # is 0.24 kWh. It applies only in Freeze Export, respects reserve, and counts as cycling.
-    failed |= simple_scenario(
-        "freeze_export_discharge_rate_default_zero",
-        my_predbat,
-        0,
-        0,
-        assert_final_metric=0,
-        assert_final_soc=10.0,
-        battery_size=10.0,
-        battery_soc=10.0,
-        discharge=99,
-        end_record=60,
-        inverter_freeze_export_discharge_rate=0.0,
-        assert_battery_cycle=0.0,
-    )
-    failed |= simple_scenario(
-        "freeze_export_discharge_rate_240w_one_hour",
-        my_predbat,
-        0,
-        0,
-        assert_final_metric=0,
-        assert_final_soc=9.76,
-        battery_size=10.0,
-        battery_soc=10.0,
-        discharge=99,
-        end_record=60,
-        inverter_freeze_export_discharge_rate=240.0,
-        assert_battery_cycle=0.24,
-    )
-    failed |= simple_scenario(
-        "freeze_export_discharge_rate_not_outside_freeze",
-        my_predbat,
-        0,
-        0,
-        assert_final_metric=0,
-        assert_final_soc=10.0,
-        battery_size=10.0,
-        battery_soc=10.0,
-        discharge=100,
-        end_record=60,
-        inverter_freeze_export_discharge_rate=240.0,
-        assert_battery_cycle=0.0,
-    )
-    failed |= simple_scenario(
-        "freeze_export_discharge_rate_reserve_floor",
-        my_predbat,
-        0,
-        0,
-        assert_final_metric=0,
-        assert_final_soc=4.0,
-        battery_size=10.0,
-        battery_soc=4.1,
-        reserve=4.0,
-        discharge=99,
-        end_record=60,
-        inverter_freeze_export_discharge_rate=240.0,
-        assert_battery_cycle=0.1,
-    )
-    if failed:
-        return failed
-
     failed |= simple_scenario("zero", my_predbat, 0, 0, 0, 0, with_battery=False)
     failed |= simple_scenario("load_only", my_predbat, 1, 0, assert_final_metric=import_rate * 24, assert_final_soc=0, with_battery=False)
     failed |= simple_scenario("load_bat_ac", my_predbat, 4, 0, assert_final_metric=import_rate * 24 * 3.2, assert_final_soc=100 - 24, with_battery=True, battery_soc=100.0, inverter_loss=0.8)
