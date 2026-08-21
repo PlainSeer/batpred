@@ -3,7 +3,6 @@ on:
   pull_request:
 jobs:
   apply-freeze-review-fix:
-    if: github.head_ref == 'trigger/freeze-accounting-main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -19,7 +18,12 @@ jobs:
       with:
         version: 0.16.0
     - name: Apply, test and push reviewed fix
-      run: bash .github/freeze_fix.sh
+      run: |
+        if [ "${GITHUB_HEAD_REF}" = "trigger/freeze-accounting-main" ]; then
+          bash .github/freeze_fix.sh
+        else
+          echo "Not the temporary fixer PR; skipping"
+        fi
 
   pre-commit:
     runs-on: ubuntu-latest
