@@ -43,7 +43,7 @@
 // falling back. Bumping makes the loader reject it and use the Python engine, which is the whole
 // point of the check.
 #define PK_ABI_VERSION 5
-#define PK_PARITY_REVISION 8
+#define PK_PARITY_REVISION 9
 #define PK_MAX_CARS 8
 #define PK_RUN_EVERY 5 // const.py RUN_EVERY
 
@@ -169,7 +169,7 @@ struct PkContext {
     double battery_loss;
     double battery_loss_discharge;
     double inverter_loss;
-    double inverter_freeze_export_discharge_rate; // W, battery-side discharge that may supply house load during Freeze Export
+    double inverter_freeze_export_discharge_rate; // W, residual battery-side discharge entering the AC balance during Freeze Export
     double inverter_limit;    // per-minute rate (multiplied by step in the kernel)
     double export_limit;      // per-minute rate
     double pv_ac_limit;       // per-minute rate
@@ -1080,17 +1080,18 @@ static int32_t pk_run_one(const ContextStore *store, const PkScenario *s, PkResu
                 }
             }
 
-            // Some inverters (observed on AlphaESS) continue to discharge the battery
-            // during Freeze Export to supply house load. The configured value is battery-side
-            // power; route it through normal discharge and inverter losses and cap at load.
+            // Some inverters (observed on AlphaESS) continue a small residual battery
+            // discharge during Freeze Export. Feed the battery-side rate into the normal AC
+            // balance so load consumes it first and any surplus may export, while respecting
+            // the reserve and the physical grid export limit.
             if (inverter_freeze_export_discharge_rate > 0 && battery_draw >= 0) {
-                const double freeze_house_demand = get_diff(battery_draw, pv_dc, pv_ac, load_yesterday, inverter_loss, inverter_loss_recp);
-                if (freeze_house_demand > 0) {
-                    const double freeze_soc_available = std::min(inverter_freeze_export_discharge_rate * step / 60000.0, std::max(soc - reserve_expected, 0.0));
-                    const double freeze_draw_limit = freeze_soc_available * battery_loss_discharge;
-                    const double freeze_draw_for_house = freeze_house_demand * inverter_loss_recp;
-                    battery_draw = std::min(freeze_draw_limit, freeze_draw_for_house);
+                const double freeze_soc_available = std::min(inverter_freeze_export_discharge_rate * step / 60000.0, std::max(soc - reserve_expected, 0.0));
+                double freeze_draw = freeze_soc_available * battery_loss_discharge;
+                const double freeze_diff = get_diff(freeze_draw, pv_dc, pv_ac, load_yesterday, inverter_loss, inverter_loss_recp);
+                if (freeze_diff < 0 && std::abs(freeze_diff) > export_limit) {
+                    freeze_draw = std::max(freeze_draw - (std::abs(freeze_diff) - export_limit) * inverter_loss_recp, 0.0);
                 }
+                battery_draw = freeze_draw;
             }
         } else {
             // ECO Mode - prediction.py:951-997
