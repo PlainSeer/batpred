@@ -338,3 +338,17 @@ Provides a quick link to the [Predbat documentation](https://springfall2008.gith
 As it says, toggles the Predbat web interface between light and dark mode.
 
 ![image](images/web-interface-dark-mode-power-chart.png)
+
+## Optional modern interface
+
+The existing interface remains the default on this branch.
+Set `web_ui: modern` inside the existing Predbat application section of `apps.yaml` to select the modern interface; remove the setting or use `web_ui: legacy` to return to the existing interface.
+Changing this setting requires a Predbat restart.
+
+The modern interface provides a dashboard, plan views, energy charts, configuration controls, discovery, components, file browsing and diagnostics.
+The Apps settings page embeds the existing editor with updated styling and save controls.
+Annual and Chat retain their existing implementations inside the modern layout.
+A separate YAML editor adds schema hints and entity suggestions and rejects a stale save before creating an `apps.yaml.backup`.
+The Apps layout remains beta, especially for nested collections and narrow screens; the schema provides editor guidance rather than complete backend validation.
+
+For source attribution, build instructions, tests and maintaining this branch across upstream releases, see [the frontend README](https://github.com/PlainSeer/batpred/blob/feature/modern-ui/frontend/README.md).
