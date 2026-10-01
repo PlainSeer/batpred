@@ -80,6 +80,7 @@ ceyyyy
 CGNAT
 Chae
 Chaf
+charg
 chargedischarge
 chargeenergytotal
 chargefreeze
@@ -100,6 +101,7 @@ COEFF
 collaps
 collapsable
 compareform
+compresslevel
 configform
 connack
 Consolas
@@ -112,6 +114,7 @@ creds
 crosscharge
 ctrdis
 ctypes
+cubone
 customauthorizer
 customisation
 Customise
@@ -207,6 +210,7 @@ etok
 euids
 EVAC
 EVDC
+evenodd
 evergen
 evilspringfall
 evse
@@ -351,6 +355,8 @@ libc
 libyaml
 LIFEPO
 linebreak
+linecap
+linejoin
 linestyle
 loadml
 loadmlpower
@@ -417,6 +423,7 @@ multiarray
 myaccount
 myenergi
 mypy
+namelist
 nanmean
 nanstd
 nattribute
@@ -442,6 +449,7 @@ notgithub
 notsn
 nrgheat
 numpy
+nums
 OCPP
 octo
 octoplus
@@ -470,6 +478,7 @@ oversizing
 overvoltage
 ownerapi
 parseable
+pathlib
 pbat
 pbgw
 pcharging
@@ -649,6 +658,7 @@ tdiff
 temperation
 Teslemetry
 testname
+testzip
 thirdparty
 threadpool
 threadpoolctl
@@ -714,11 +724,13 @@ urlsafe
 uscapacity
 useid
 userinterface
+utime
 Vallery
 varh
 venv
 Victron
 visibilitychange
+Vite
 vvwwxxabcdefyyzzuu
 waf
 waitpid
@@ -740,6 +752,7 @@ xaxistooltip
 xlabel
 xlim
 xload
+Xmark
 xrtkq
 xticks
 xxabcdefyy
