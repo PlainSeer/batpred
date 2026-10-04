@@ -63,7 +63,6 @@ Overview checks `weather.forecast_home` for the current weather and temperature.
 
 The modern `apps.yaml` editor validates these settings and suggests entity IDs from Home Assistant. Open **Configuration > Editor**, enter one of the entity settings, then choose the matching entity from the suggestions. Hover over a setting to read its schema description.
 
-
 ![image](images/web-interface-plan-view.png)
 
 ## Accessing the Web Interface
