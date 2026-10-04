@@ -427,6 +427,8 @@ Docker users can change the web port for the Predbat web interface by setting **
   web_port: 5052
 ```
 
+The legacy interface remains the default. Set `web_ui: modern` to use the modern interface, or `web_ui: legacy` to select the legacy interface explicitly. See [Use the modern interface](web-interface.md#use-the-modern-interface) for the optional EV and ASHP entities used by Overview.
+
 ### notify_devices
 
 A list of device names to notify when Predbat sends a notification. The default is just 'notify' which contacts all mobile devices

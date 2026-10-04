@@ -56,3 +56,56 @@ jobs:
           git commit -m "chore: update prediction kernel binaries for all platforms"
           git push
         fi
+
+  frontend:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'review/predbat-v9.3.5-modern-ui-20261004'
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.head_ref }}
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '24'
+        cache: npm
+        cache-dependency-path: frontend/package-lock.json
+    - uses: actions/setup-python@v4
+      with:
+        python-version: 3.x
+    - name: Install locked frontend dependencies
+      working-directory: frontend
+      run: npm ci
+    - name: Test frontend including preserved Detailed flow and packaging
+      working-directory: frontend
+      run: npm test
+    - name: Lint frontend
+      working-directory: frontend
+      run: npm run lint
+    - name: Build reproducible production bundle
+      working-directory: frontend
+      run: npm run bundle
+    - name: Verify production archive and patched sanitizer
+      run: |
+        python3 - <<'PY'
+        import zipfile
+        with zipfile.ZipFile("apps/predbat/frontend.zip") as archive:
+            assert archive.testzip() is None
+            assert "dist/index.html" in archive.namelist()
+            code = b"".join(archive.read(name) for name in archive.namelist() if name.endswith(".js"))
+            assert b"3.4.16" in code
+            assert b"3.1.7" not in code
+            assert any("OverviewPage" in name for name in archive.namelist())
+        PY
+    - name: Commit rebuilt bundle to this review branch
+      run: |
+        git add apps/predbat/frontend.zip
+        if git diff --cached --quiet; then
+          echo "Frontend bundle unchanged"
+        else
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "build(frontend): rebuild preserved modern UI with Overview"
+          git push
+        fi

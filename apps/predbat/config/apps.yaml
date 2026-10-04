@@ -336,6 +336,10 @@ pred_bat:
   car_charging_planned:
     - 're:(sensor.wallbox_portal_status_description|sensor.myenergi_zappi_[0-9a-z]+_plug_status|sensor.tesla_wall_connector_status)'
 
+  # Optional live charger state used by the modern Overview page.
+  car_charging_status:
+    - 're:(sensor.wallbox_portal_status_description|sensor.myenergi_zappi_[0-9a-z]+_plug_status|sensor.[0-9a-z_]+_myenergi_zappi_[0-9a-z]+_plug_status|sensor.tesla_wall_connector_status)'
+
   car_charging_planned_response:
     - 'yes'
     - 'on'
