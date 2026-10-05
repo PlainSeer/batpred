@@ -479,6 +479,7 @@ oversizing
 overvoltage
 ownerapi
 parseable
+partlycloudy
 pathlib
 pbat
 pbgw
@@ -642,6 +643,7 @@ Strømligning
 subclassing
 submessage
 substep
+subvalue
 sunspec
 sunsynk
 supabase
@@ -683,12 +685,14 @@ tmpfs
 tmrw
 tojson
 topbar
+totl
 tottime
 trapezoidally
 trapz
 Trefor
 treforsiphone
 treforsouthwell
+trgt
 triggerable
 tunables
 twinx
@@ -730,6 +734,7 @@ Vallery
 varh
 venv
 Victron
+viewbox
 visibilitychange
 Vite
 vvwwxxabcdefyyzzuu

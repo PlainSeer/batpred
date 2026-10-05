@@ -49,7 +49,7 @@ async def check_modern_routes(my_predbat):
             continue
 
         async with TestClient(TestServer(app)) as client:
-            for path in ("/", "/plan", "/dash", "/apps", "/apps_editor", "/charts", "/config", "/log", "/compare", "/components", "/discovery", "/internals", "/browse", "/docs", "/annual", "/chat"):
+            for path in ("/", "/overview", "/plan", "/dash", "/apps", "/apps_editor", "/charts", "/config", "/log", "/compare", "/components", "/discovery", "/internals", "/browse", "/docs", "/annual", "/chat"):
                 response = await client.get(path)
                 assert response.status == 200, (path, response.status, await response.text())
                 assert '<div id="root"></div>' in await response.text(), path
@@ -69,7 +69,7 @@ async def check_modern_routes(my_predbat):
             assert (await client.get("/assets/missing.js")).status == 404
             assert (await client.get("/api/chart_data?chart=unknown")).status == 400
             assert (await client.get("/api/status")).status == 200
-            assert (await (await client.get("/api/status")).json())["version"].startswith("v9.3.4")
+            assert (await (await client.get("/api/status")).json())["version"].startswith("v9.3.5")
             assert (await client.get("/api/internals/threads")).status == 200
 
             with patch.object(interface, "set_state_external", new_callable=AsyncMock) as setter:
