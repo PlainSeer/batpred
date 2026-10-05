@@ -14,6 +14,8 @@ pred_bat:
 
 Predbat uses the legacy interface when `web_ui` is missing. Saving `apps.yaml` restarts Predbat and applies the selection.
 
+![Modern Overview dashboard](images/web-interface-overview-view.png)
+
 ### Configure the Overview page
 
 Overview reads the standard grid, solar, home and battery data from your existing Predbat configuration. You don't need to duplicate those entities. The electric vehicle (EV) and air-source heat pump (ASHP) cards accept extra, optional entities.
