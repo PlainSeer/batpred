@@ -69,7 +69,7 @@ async def check_modern_routes(my_predbat):
             assert (await client.get("/assets/missing.js")).status == 404
             assert (await client.get("/api/chart_data?chart=unknown")).status == 400
             assert (await client.get("/api/status")).status == 200
-            assert (await (await client.get("/api/status")).json())["version"].startswith("v9.3.6")
+            assert (await (await client.get("/api/status")).json())["version"].startswith("v9.3.7")
             assert (await client.get("/api/internals/threads")).status == 200
 
             with patch.object(interface, "set_state_external", new_callable=AsyncMock) as setter:
