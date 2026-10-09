@@ -61,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'review/predbat-v9.3.6-modern-ui-20261005'
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'review/predbat-v9.3.7-modern-ui-20261009'
     steps:
     - uses: actions/checkout@v4
       with:
@@ -77,6 +77,13 @@ jobs:
     - name: Install locked frontend dependencies
       working-directory: frontend
       run: npm ci
+    - name: Report frontend dependency audit
+      working-directory: frontend
+      continue-on-error: true
+      run: npm audit --json
+    - name: Check production frontend dependencies
+      working-directory: frontend
+      run: npm audit --omit=dev --audit-level=high
     - name: Test frontend including preserved Detailed flow and packaging
       working-directory: frontend
       run: npm test
