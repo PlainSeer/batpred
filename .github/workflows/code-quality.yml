@@ -81,6 +81,9 @@ jobs:
       working-directory: frontend
       continue-on-error: true
       run: npm audit --json
+    - name: Check production frontend dependencies
+      working-directory: frontend
+      run: npm audit --omit=dev --audit-level=high
     - name: Test frontend including preserved Detailed flow and packaging
       working-directory: frontend
       run: npm test
