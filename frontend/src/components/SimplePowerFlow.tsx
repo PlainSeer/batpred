@@ -540,8 +540,6 @@ function SimplePowerFlow({ data }: SimplePowerFlowProps) {
 
         <span className="simple-node-power">{formatPower(data.grid_power)}</span>
 
-        <span className="simple-node-secondary" aria-hidden="true">&nbsp;</span>
-
         <small>{!gridActive ? 'Idle' : data.grid_importing ? 'Importing' : 'Exporting'}</small>
       </div>
 
