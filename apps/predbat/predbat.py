@@ -315,6 +315,7 @@ class PredBat(hass.Hass, Octopus, Energidataservice, Stromligning, Fetch, Plan, 
         Init stub
         """
         self.text_plan = "Computing please wait..."
+        self.text_plan_raw = ""
         self.prediction_cache_enable = True
         self.base_load = 0
         self.plan_interval_minutes = self.args.get("plan_interval_minutes", 30)
@@ -774,6 +775,7 @@ class PredBat(hass.Hass, Octopus, Energidataservice, Stromligning, Fetch, Plan, 
         # Config validity
         m.config_valid.set(0 if self.arg_errors else 1)
         m.config_warnings.set(len(self.arg_errors) if self.arg_errors else 0)
+        m.config_errors = dict(self.arg_errors)
 
         # Errors
         if self.had_errors:

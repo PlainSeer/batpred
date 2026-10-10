@@ -10,6 +10,9 @@
 
 import asyncio
 import os
+from datetime import timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from web import WebInterface, is_data_numerical
 from web_helper import get_plan_renderer_js
@@ -35,6 +38,25 @@ def run_web_functions_tests(my_predbat):
 
     web = make_web(my_predbat)
     prefix = my_predbat.prefix
+
+    print("Test: legacy UI is the default and the bundled modern UI is selectable")
+    had_web_ui = "web_ui" in my_predbat.args
+    original_web_ui = my_predbat.args.get("web_ui")
+    my_predbat.args.pop("web_ui", None)
+    if web.get_web_ui() != "legacy":
+        print("  ERROR: missing web_ui should select the legacy interface")
+        failed += 1
+    my_predbat.args["web_ui"] = "modern"
+    modern_response = asyncio.run(web.html_plan(None))
+    if modern_response.status != 200 or '<div id="root"></div>' not in modern_response.text:
+        print("  ERROR: web_ui modern did not serve the bundled React interface")
+        failed += 1
+    if had_web_ui:
+        my_predbat.args["web_ui"] = original_web_ui
+    else:
+        my_predbat.args.pop("web_ui", None)
+
+    failed += run_modern_ui_override_regression_tests(my_predbat)
 
     charging_entity = "binary_sensor." + prefix + "_charging"
     exporting_entity = "binary_sensor." + prefix + "_exporting"
@@ -326,6 +348,10 @@ def run_compare_empty_state_tests(my_predbat, web):
     if "7 day rolling average chart loading (please wait)" in text:
         print(f"  ERROR: should not show the stuck '7 day rolling average' message when nothing is configured")
         failed += 1
+    data = web.get_compare_data()
+    if data["configured"] or data["ready"] or data["tariffs"]:
+        print(f"  ERROR: modern Compare API should return a clean unconfigured state")
+        failed += 1
 
     # -------------------------------------------------------------------------
     print("Test: a configured but not-yet-computed compare_list keeps the genuine loading message")
@@ -337,6 +363,10 @@ def run_compare_empty_state_tests(my_predbat, web):
         failed += 1
     if "Loading chart (please wait)" not in text:
         print(f"  ERROR: expected the genuine loading message when compare_list is set but not yet computed")
+        failed += 1
+    data = web.get_compare_data()
+    if not data["configured"] or data["ready"] or data["tariffs"][0]["name"] != "Test tariff":
+        print(f"  ERROR: modern Compare API should expose configured tariffs before results exist")
         failed += 1
 
     my_predbat.args = original_args
@@ -552,6 +582,31 @@ def run_web_logo_image_tests(my_predbat):
         failed += 1
 
     print("**** Web logo image tests completed ****")
+    return failed
+
+
+def run_modern_ui_override_regression_tests(my_predbat):
+    """Web overrides must request a new plan without relying on HA events."""
+    web = make_web(my_predbat)
+    time_str = (my_predbat.now_utc + timedelta(hours=1)).strftime("%H:%M")
+    previous = (my_predbat.update_pending, my_predbat.plan_valid)
+    failed = 0
+    print("Test: all web plan and rate overrides immediately invalidate the plan")
+    actions = [(web.html_plan_override, action) for action in ("Manual Demand", "Manual Charge", "Manual Export", "Manual Freeze Charge", "Manual Freeze Export", "Clear")] + [
+        (web.html_rate_override, action) for action in ("Set Import", "Clear Import", "Set Export", "Clear Export", "Set Load", "Clear Load", "Set SOC", "Clear SOC", "Set SOC Max", "Clear SOC Max")
+    ]
+    try:
+        with patch.object(my_predbat, "async_manual_select", new=AsyncMock()), patch.object(my_predbat, "manual_rates", return_value={}), patch.object(web, "set_state_external", new=AsyncMock()):
+            for handler, action in actions:
+                request = SimpleNamespace(post=AsyncMock(return_value={"time": time_str, "action": action, "rate": "10"}))
+                my_predbat.update_pending = False
+                my_predbat.plan_valid = True
+                response = asyncio.run(handler(request))
+                if response.status != 200 or not my_predbat.update_pending or my_predbat.plan_valid:
+                    print("  ERROR: {} did not request immediate replanning".format(action))
+                    failed += 1
+    finally:
+        my_predbat.update_pending, my_predbat.plan_valid = previous
     return failed
 
 
