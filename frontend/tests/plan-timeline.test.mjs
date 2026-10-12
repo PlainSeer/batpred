@@ -44,6 +44,15 @@ test('timeline uses separate date labels and three-hour time ticks', () => {
   assert.equal(ticks[2].label, '06:00')
 })
 
+test('timeline keeps nearby date labels from overlapping around midnight', () => {
+  const start = new Date(2026, 9, 11, 23, 30).getTime()
+  const ticks = module.exports.buildTimeTicks(start, start + 6 * 60 * 60 * 1000)
+  const dateLabels = ticks.filter((tick) => tick.dateLabel)
+
+  assert.equal(dateLabels.length, 1)
+  assert.match(dateLabels[0].dateLabel, /12 Oct/)
+})
+
 test('SOC hover interpolates the plotted value at the pointer time', () => {
   const points = [{ time: 0, soc: 20 }, { time: 30, soc: 50 }, { time: 60, soc: 40 }]
 
@@ -82,6 +91,32 @@ test('timeline splits a continuous charge action around a Power Up session', () 
   assert.equal(events[1].rateEventType, 'octopus_power_up')
   assert.equal(events[1].start.toISOString(), '2026-10-11T10:00:00.000Z')
   assert.equal(events[1].end.toISOString(), '2026-10-11T11:00:00.000Z')
+})
+
+test('timeline events total solar generation across their plan slots', () => {
+  const row = (time, pv_forecast) => ({
+    time,
+    state: 'Demand',
+    state_target: '',
+    soc_percent: 50,
+    import_rate: 20,
+    export_rate: 12,
+    pv_forecast,
+    car_charging: 0,
+    carbon_change: 0,
+    reasons: []
+  })
+
+  const events = module.exports.buildTimelineEvents({
+    rows: [
+      row('2026-10-11T10:30:00+01:00', 0.35),
+      row('2026-10-11T11:00:00+01:00', 0.45)
+    ],
+    currency_symbols: ['£', 'p'],
+    reason_templates: {}
+  }, 30 * 60 * 1000, 50)
+
+  assert.equal(events[0].solarGeneration, 0.8)
 })
 
 test('timeline identifies a demand row held for a charging car', () => {

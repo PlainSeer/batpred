@@ -59,6 +59,8 @@ type TimelineEvent = {
 
   carCharging: number
 
+  solarGeneration: number
+
   target: number | null
   targetSocStart: number | null
   targetSocEnd: number | null
@@ -496,6 +498,11 @@ function buildTimelineEvents(
 
     const carCharging = eventRows.reduce((total, row) => total + (row.car_charging ?? 0), 0)
 
+    // Each timeline event can cover several plan slots. pv_forecast is the
+    // energy forecast for one slot, so summing it gives the useful total for
+    // the selected action window.
+    const solarGeneration = eventRows.reduce((total, row) => total + (row.pv_forecast ?? 0), 0)
+
     /*
      * Use the first reason as the event explanation.
      *
@@ -569,6 +576,8 @@ function buildTimelineEvents(
       carbonChange,
 
       carCharging,
+
+      solarGeneration,
 
       explanation,
 
@@ -738,6 +747,15 @@ function formatEventRange(start: Date, end: Date) {
 // oxlint-disable-next-line react/only-export-components -- exported for the timeline spacing test
 export function buildTimeTicks(startMs: number, endMs: number): TimelineTick[] {
   const ticks: TimelineTick[] = []
+  const minimumDateLabelGap = 6 * 60 * 60 * 1000
+
+  function makeRoomForDateLabel(time: number) {
+    const previousDateTick = ticks.findLast((tick) => tick.dateLabel)
+
+    if (previousDateTick && time - previousDateTick.time < minimumDateLabelGap) {
+      previousDateTick.dateLabel = undefined
+    }
+  }
 
   const start = new Date(startMs)
 
@@ -771,6 +789,19 @@ export function buildTimeTicks(startMs: number, endMs: number): TimelineTick[] {
 
   while (cursor.getTime() < endMs) {
     const midnight = cursor.getHours() === 0
+    const dateLabel = midnight
+      ? cursor.toLocaleDateString('en-GB', {
+        weekday: 'short',
+
+        day: 'numeric',
+
+        month: 'short'
+      })
+      : undefined
+
+    if (dateLabel) {
+      makeRoomForDateLabel(cursor.getTime())
+    }
 
     ticks.push({
       time: cursor.getTime(),
@@ -781,15 +812,7 @@ export function buildTimeTicks(startMs: number, endMs: number): TimelineTick[] {
         minute: '2-digit'
       }),
 
-      dateLabel: midnight
-        ? cursor.toLocaleDateString('en-GB', {
-          weekday: 'short',
-
-          day: 'numeric',
-
-          month: 'short'
-        })
-        : undefined,
+      dateLabel,
 
       edge: 'middle'
     })
@@ -805,6 +828,20 @@ export function buildTimeTicks(startMs: number, endMs: number): TimelineTick[] {
   const lastTick = ticks[ticks.length - 1]
 
   if (!lastTick || endMs - lastTick.time > 60 * 60 * 1000) {
+    const dateLabel = end.getHours() === 0
+      ? end.toLocaleDateString('en-GB', {
+        weekday: 'short',
+
+        day: 'numeric',
+
+        month: 'short'
+      })
+      : undefined
+
+    if (dateLabel) {
+      makeRoomForDateLabel(endMs)
+    }
+
     ticks.push({
       time: endMs,
 
@@ -814,15 +851,7 @@ export function buildTimeTicks(startMs: number, endMs: number): TimelineTick[] {
         minute: '2-digit'
       }),
 
-      dateLabel: end.getHours() === 0
-        ? end.toLocaleDateString('en-GB', {
-          weekday: 'short',
-
-          day: 'numeric',
-
-          month: 'short'
-        })
-        : undefined,
+      dateLabel,
 
       edge: 'end'
     })
@@ -1133,6 +1162,14 @@ export default function PlanVisual({ plan }: PlanVisualProps) {
 
               <strong>{formatDuration(activeEvent.start, activeEvent.end)}</strong>
             </div>
+
+            {activeEvent.solarGeneration > 0 && (
+              <div className="plan-timeline-detail-value-solar">
+                <span>Solar generation</span>
+
+                <strong>{activeEvent.solarGeneration.toFixed(2)} kWh</strong>
+              </div>
+            )}
 
             {plan.carbon_enable && activeEvent.carbonIntensityMin !== null && (
               <div>

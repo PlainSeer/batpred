@@ -29,6 +29,16 @@ If you are not using the Predbat app then you may be able to access the Web Inte
 
 ## Web Interface Views
 
+Modern Chart.js charts support horizontal zoom with the mouse wheel or a pinch gesture, drag to pan, and double-click to restore the original range.
+
+The Modern Overview ASHP card can show indoor temperature in °C. In PredHeat `pump` mode it reuses PredHeat's indoor temperature and daily heating energy. Without PredHeat, configure an indoor-temperature sensor alongside `ashp_enable: true`:
+
+```yaml
+pred_bat:
+  ashp_enable: true
+  internal_temperature: sensor.living_room_temperature
+```
+
 A number of different views of Predbat are available and you can change your view using the top menu bar.
 
 ### Dash View

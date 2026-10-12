@@ -3170,12 +3170,14 @@ chart.render();
             if ashp_enabled:
                 ashp_power_entity = self.get_arg("ashp_power", default=None, indirect=False)
                 ashp_status_entity = self.get_arg("ashp_status", default=None, indirect=False)
+                internal_temperature_entity = self.get_arg("internal_temperature", default=None, indirect=False)
                 ashp_energy_entity = self.get_arg("heat_energy", default=None, indirect=False)
                 if not ashp_energy_entity:
                     ashp_energy_entity = self.get_arg("ashp_energy_today", default=None, indirect=False)
                 ashp_power = None
                 ashp_status = None
                 ashp_energy = None
+                internal_temperature = None
 
                 if ashp_power_entity:
                     ashp_power = _optional_float(self.get_state_wrapper(entity_id=ashp_power_entity, default=None, required_unit="W"))
@@ -3188,7 +3190,15 @@ chart.render();
                 elif predheat_is_pump:
                     ashp_energy = _optional_float(getattr(getattr(self.base, "predheat", None), "heat_energy_today", None))
 
-                ashp = {"power": ashp_power, "status": ashp_status, "energy_today": ashp_energy}
+                if predheat_is_pump:
+                    predheat_internal_temperature = getattr(getattr(self.base, "predheat", None), "internal_temperature", None)
+                    if isinstance(predheat_internal_temperature, dict):
+                        internal_temperature = _optional_float(predheat_internal_temperature.get(0))
+
+                if internal_temperature is None and internal_temperature_entity:
+                    internal_temperature = _optional_float(self.get_state_wrapper(entity_id=internal_temperature_entity, default=None))
+
+                ashp = {"power": ashp_power, "status": ashp_status, "energy_today": ashp_energy, "internal_temperature": internal_temperature}
 
             # Match the existing diagram's direction thresholds/sign conventions.
             grid_importing = grid_power <= -10
@@ -4157,9 +4167,19 @@ chart.render();
         now_str = self.now_utc.strftime(TIME_FORMAT)
         hourly_history = history_attribute(self.get_history_wrapper(self.prefix + ".ppkwh_hour", 2, required=False))
         today_history = history_attribute(self.get_history_wrapper(self.prefix + ".ppkwh_today", 2, required=False))
+
+        def rates_with_current_value(entity_id):
+            results = dict(self.get_entity_results(entity_id))
+            current = _optional_float(self.get_state_wrapper(entity_id=entity_id, default=None))
+            if current is not None:
+                results[now_str] = current
+            return results
+
         series = {
-            "import": self.get_entity_results(self.prefix + ".rates"),
-            "export": self.get_entity_results(self.prefix + ".rates_export"),
+            # `results` contains only tariff changes for flat tariffs. Adding
+            # the live state makes the active rate visible at Now as well.
+            "import": rates_with_current_value(self.prefix + ".rates"),
+            "export": rates_with_current_value(self.prefix + ".rates_export"),
             "gas": self.get_entity_results(self.prefix + ".rates_gas"),
             "actual_hourly": prune_today(hourly_history, self.now_utc, self.midnight_utc, prune=False, prune_future=False),
             "actual_today": prune_today(today_history, self.now_utc, self.midnight_utc, prune=False, prune_future=False),
@@ -4237,12 +4257,31 @@ chart.render();
     def get_savings_chart_data(self):
         """Return daily and cumulative savings history for the modern chart."""
         now_str = self.now_utc.strftime(TIME_FORMAT)
+        daily_predbat = history_attribute(self.get_history_wrapper(self.prefix + ".savings_yesterday_predbat", 28, required=False), daily=True, offset_days=-1, pounds=True, first=False)
+        daily_pv_battery = history_attribute(self.get_history_wrapper(self.prefix + ".savings_yesterday_pvbat", 28, required=False), daily=True, offset_days=-1, pounds=True, first=False)
+        total_predbat = history_attribute(self.get_history_with_now_attrs(self.prefix + ".savings_total_predbat", 28), daily=True, pounds=True, first=False)
+        total_pv_battery = history_attribute(self.get_history_with_now_attrs(self.prefix + ".savings_total_pvbat", 28), daily=True, pounds=True, first=False)
+
+        def running_total_when_unavailable(daily, total):
+            """Use daily savings until Predbat has published a cumulative total."""
+            if total and any(value != 0 for value in total.values()):
+                return total
+
+            running_total = 0
+            return {day: dp2(running_total := running_total + value) for day, value in daily.items()}
+
+        def latest_total(total):
+            latest_day = next(reversed(total), None)
+            return total.get(latest_day, 0)
+
+        total_predbat = running_total_when_unavailable(daily_predbat, total_predbat)
+        total_pv_battery = running_total_when_unavailable(daily_pv_battery, total_pv_battery)
         series = {
-            "daily_predbat": history_attribute(self.get_history_wrapper(self.prefix + ".savings_yesterday_predbat", 28, required=False), daily=True, offset_days=-1, pounds=True, first=False),
-            "daily_pv_battery": history_attribute(self.get_history_wrapper(self.prefix + ".savings_yesterday_pvbat", 28, required=False), daily=True, offset_days=-1, pounds=True, first=False),
+            "daily_predbat": daily_predbat,
+            "daily_pv_battery": daily_pv_battery,
             "daily_cost": history_attribute(self.get_history_wrapper(self.prefix + ".cost_yesterday", 28, required=False), daily=True, offset_days=-1, pounds=True, first=False),
-            "total_predbat": history_attribute(self.get_history_with_now_attrs(self.prefix + ".savings_total_predbat", 28), daily=True, pounds=True, first=False),
-            "total_pv_battery": history_attribute(self.get_history_with_now_attrs(self.prefix + ".savings_total_pvbat", 28), daily=True, pounds=True, first=False),
+            "total_predbat": total_predbat,
+            "total_pv_battery": total_pv_battery,
         }
 
         return {
@@ -4250,6 +4289,10 @@ chart.render();
             "ready": any(series.values()),
             "generated_at": now_str,
             "currency_symbol": self.currency_symbols[0],
+            "totals": {
+                "predbat": latest_total(total_predbat),
+                "pv_battery": latest_total(total_pv_battery),
+            },
             "series": series,
         }
 
