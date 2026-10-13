@@ -1,6 +1,9 @@
 name: code-quality
 on:
   pull_request:
+  push:
+    branches:
+    - 'review/modern-ui-power-flow-20261013'
 jobs:
   pre-commit:
     runs-on: ubuntu-latest
@@ -54,5 +57,50 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git commit -m "chore: update prediction kernel binaries for all platforms"
+          git push
+        fi
+
+  frontend:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/review/modern-ui-power-flow-20261013'
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: review/modern-ui-power-flow-20261013
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '24'
+        cache: npm
+        cache-dependency-path: frontend/package-lock.json
+    - uses: actions/setup-python@v4
+      with:
+        python-version: 3.x
+    - name: Install frontend dependencies
+      working-directory: frontend
+      run: npm ci
+    - name: Test modern UI and power flow routes
+      working-directory: frontend
+      run: npm test
+    - name: Lint frontend
+      working-directory: frontend
+      run: npm run lint
+    - name: Build production UI bundle
+      working-directory: frontend
+      run: npm run bundle
+    - name: Verify and publish bundle on validation branch
+      run: |
+        python3 - <<'PY'
+        import zipfile
+        with zipfile.ZipFile("apps/predbat/frontend.zip") as archive:
+            assert archive.testzip() is None
+            assert "dist/index.html" in archive.namelist()
+        PY
+        git add apps/predbat/frontend.zip
+        if ! git diff --cached --quiet; then
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "build(frontend): bundle modern power flow update"
           git push
         fi
