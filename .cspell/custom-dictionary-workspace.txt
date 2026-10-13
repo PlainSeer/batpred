@@ -89,6 +89,7 @@ chargehold
 chargelater
 chargelimit
 chargepower
+chartjs
 CHECKCODE
 Chrg
 citem
@@ -430,6 +431,7 @@ multiarray
 myaccount
 myenergi
 mypy
+namelist
 nanmean
 nanstd
 nattribute
@@ -668,6 +670,7 @@ tdiff
 temperation
 Teslemetry
 testname
+testzip
 thirdparty
 threadpool
 threadpoolctl
@@ -718,6 +721,7 @@ unfetchable
 unflushed
 unindexed
 unnormalised
+unoccluded
 unparseable
 unpickled
 unpickles
