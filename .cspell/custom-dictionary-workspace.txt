@@ -488,6 +488,7 @@ ownerapi
 pac
 parseable
 partlycloudy
+pathlib
 pbat
 pbgw
 pcharging
@@ -572,6 +573,7 @@ resultmid
 retryable
 reweight
 reweighted
+rglob
 rname
 Roboto
 rowspan
