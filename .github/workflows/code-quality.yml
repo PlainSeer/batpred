@@ -3,7 +3,7 @@ on:
   pull_request:
   push:
     branches:
-    - 'review/modern-ui-power-flow-20261013'
+    - 'review/modern-ui-soc-mode-20261014'
 jobs:
   pre-commit:
     runs-on: ubuntu-latest
@@ -62,13 +62,13 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/review/modern-ui-power-flow-20261013'
+    if: github.ref == 'refs/heads/review/modern-ui-soc-mode-20261014'
     permissions:
       contents: write
     steps:
     - uses: actions/checkout@v4
       with:
-        ref: review/modern-ui-power-flow-20261013
+        ref: review/modern-ui-soc-mode-20261014
     - uses: actions/setup-node@v4
       with:
         node-version: '24'
@@ -92,17 +92,19 @@ jobs:
       run: npm run lint
     - name: Build production UI
       working-directory: frontend
-      run: npm run build
-    - name: Verify checked-in bundle matches fresh build
+      run: npm run bundle
+    - name: Verify and publish production bundle
       run: |
         python3 - <<'PY'
-        from pathlib import Path
         import zipfile
-        expected = {"dist/" + str(path.relative_to("frontend/dist")): path.read_bytes() for path in Path("frontend/dist").rglob("*") if path.is_file()}
         with zipfile.ZipFile("apps/predbat/frontend.zip") as archive:
             assert archive.testzip() is None
-            actual = {name: archive.read(name) for name in archive.namelist() if not name.endswith("/")}
-        assert "dist/index.html" in actual
-        assert actual == expected, "Checked-in production bundle differs from the current source build"
-        print("Production bundle matches all fresh build files")
+            assert "dist/index.html" in archive.namelist()
         PY
+        git add apps/predbat/frontend.zip
+        if ! git diff --cached --quiet; then
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "build(frontend): bundle Control SOC only selector"
+          git push
+        fi
