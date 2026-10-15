@@ -3,7 +3,7 @@ on:
   pull_request:
   push:
     branches:
-    - 'review/modern-ui-plan-tooltip-20261014'
+    - 'review/modern-ui-ev-navigation-20261015'
 jobs:
   pre-commit:
     runs-on: ubuntu-latest
@@ -62,13 +62,13 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/review/modern-ui-plan-tooltip-20261014'
+    if: github.ref == 'refs/heads/review/modern-ui-ev-navigation-20261015'
     permissions:
       contents: write
     steps:
     - uses: actions/checkout@v4
       with:
-        ref: review/modern-ui-plan-tooltip-20261014
+        ref: review/modern-ui-ev-navigation-20261015
     - uses: actions/setup-node@v4
       with:
         node-version: '24'
