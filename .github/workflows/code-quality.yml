@@ -3,7 +3,7 @@ on:
   pull_request:
   push:
     branches:
-    - 'review/modern-ui-ev-navigation-20261015'
+    - 'review/backend-updates-modern-ui-20261017'
 jobs:
   pre-commit:
     runs-on: ubuntu-latest
@@ -62,13 +62,13 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/review/modern-ui-ev-navigation-20261015'
+    if: github.ref == 'refs/heads/review/backend-updates-modern-ui-20261017'
     permissions:
       contents: write
     steps:
     - uses: actions/checkout@v4
       with:
-        ref: review/modern-ui-ev-navigation-20261015
+        ref: review/backend-updates-modern-ui-20261017
     - uses: actions/setup-node@v4
       with:
         node-version: '24'
