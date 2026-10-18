@@ -3,7 +3,7 @@ on:
   pull_request:
   push:
     branches:
-    - 'review/backend-updates-modern-ui-20261017'
+    - 'review/predbat-v9.4.1-release-modern-ui-20261018'
 jobs:
   pre-commit:
     runs-on: ubuntu-latest
@@ -62,13 +62,13 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/review/backend-updates-modern-ui-20261017'
+    if: github.ref == 'refs/heads/review/predbat-v9.4.1-release-modern-ui-20261018'
     permissions:
       contents: write
     steps:
     - uses: actions/checkout@v4
       with:
-        ref: review/backend-updates-modern-ui-20261017
+        ref: review/predbat-v9.4.1-release-modern-ui-20261018
     - uses: actions/setup-node@v4
       with:
         node-version: '24'
