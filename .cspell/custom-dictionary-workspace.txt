@@ -95,6 +95,7 @@ chargehold
 chargelater
 chargelimit
 chargepower
+chartjs
 CHECKCODE
 chg
 Chrg
