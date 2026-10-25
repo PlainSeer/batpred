@@ -36,9 +36,6 @@ import io
 from io import StringIO
 import hashlib
 import copy
-import mimetypes
-import zipfile
-from pathlib import PurePosixPath
 from ruamel.yaml import YAML
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 
@@ -78,6 +75,7 @@ from web_helper import (
 )
 
 from utils import (
+    strptime_aware,
     calc_percent_limit,
     str2time,
     dp0,
@@ -114,6 +112,16 @@ from marginal import MARGINAL_EXTRA_KWH_LEVEL_NAMES, MARGINAL_EXTRA_KWH_LEVELS, 
 DEBUG_HISTORY_DOWNLOAD_MAX = 16
 
 
+class UIFileResponse(web.FileResponse):
+    """Keep compressed UI files safe for persistent ingress connections."""
+
+    async def _start_compression(self, request):
+        """Avoid compressed trailers on responses that must have no body."""
+        # aiohttp otherwise writes an empty compressed stream after the 304/HEAD headers.
+        if request.method != "HEAD" and self.status != 304:
+            await super()._start_compression(request)
+
+
 def _optional_float(value):
     """Return a finite float for an optional Home Assistant value, otherwise None."""
     try:
@@ -132,21 +140,30 @@ def _apps_schema_value(spec):
         "string": {"type": "string"},
         "boolean": {"type": "boolean"},
         "dict": {"type": "object"},
-        "sensor": {"type": "string", "x-ha-entity": True},
-        "integer_list": {"type": "array", "items": {"type": "integer"}},
-        "float_list": {"type": "array", "items": {"type": "number"}},
-        "string_list": {"type": "array", "items": {"type": "string"}},
-        "boolean_list": {"type": "array", "items": {"type": "boolean"}},
-        "dict_list": {"type": "array", "items": {"type": "object"}},
-        "sensor_list": {"type": "array", "items": {"type": ["string", "number", "boolean"], "x-ha-entity": True}},
+        "sensor": {"type": ["string", "array"], "x-ha-entity": True, "items": {"type": ["string", "number", "boolean"], "x-ha-entity": True}},
+        "integer_list": {"type": ["integer", "array"], "items": {"type": "integer"}},
+        "float_list": {"type": ["number", "array"], "items": {"type": "number"}},
+        "string_list": {"type": ["string", "array"], "items": {"type": "string"}},
+        "boolean_list": {"type": ["boolean", "array"], "items": {"type": "boolean"}},
+        "dict_list": {"type": ["object", "array"], "items": {"type": "object"}},
+        "sensor_list": {"type": ["string", "number", "boolean", "array"], "x-ha-entity": True, "items": {"type": ["string", "number", "boolean"], "x-ha-entity": True}},
         "int_float_dict": {"type": "object", "additionalProperties": {"type": "number"}},
     }
     choices = [copy.deepcopy(scalar_types[item]) for item in spec.get("type", "string").split("|") if item in scalar_types]
+    if "entries" in spec:
+        for choice in choices:
+            if "items" not in choice:
+                choice["items"] = copy.deepcopy(choice)
+                choice["type"] = [choice["type"], "array"]
     if spec.get("or_auto"):
         choices.append({"const": "auto"})
-    schema = choices[0] if len(choices) == 1 else {"oneOf": choices}
+    schema = choices[0] if len(choices) == 1 else {"anyOf": choices}
     if spec.get("allowed"):
         schema = {"enum": spec["allowed"]}
+    if "min" in spec:
+        schema["minimum"] = spec["min"]
+    if "max" in spec:
+        schema["maximum"] = spec["max"]
     return schema
 
 
@@ -163,7 +180,6 @@ APPS_SCHEMA_DESCRIPTIONS = {
     "ha_key": "Home Assistant long-lived access token used to read entities and call services when Predbat connects remotely.",
     "load_filter_threshold": "Maximum number of consecutive minutes with zero household load that Predbat fills from surrounding history. Set 1440 to disable gap filling.",
     "web_port": "TCP port used by Predbat's built-in web server and modern dashboard.",
-    "web_ui": "Selects the dashboard served by Predbat: 'legacy' for the original interface or 'modern' for the new responsive interface.",
     "chat": "Chat assistant configuration, including named providers, API endpoints, credentials, model selection and request timeout.",
     "load_today": "One or more cumulative Home Assistant energy sensors reporting household consumption today in kWh. Multiple sensors are added together.",
     "import_today": "One or more cumulative Home Assistant energy sensors reporting grid import today in kWh. Multiple sensors are added together.",
@@ -406,7 +422,7 @@ def _apps_schema_description(name, spec):
 
 
 def build_apps_json_schema():
-    """Build the Monaco JSON Schema for a Predbat apps.yaml file."""
+    """Build the editor JSON Schema for a Predbat apps.yaml file."""
     properties = {
         "module": {"type": "string", "const": "predbat", "description": "AppDaemon module to load for this app. Predbat must use the value 'predbat'."},
         "class": {"type": "string", "const": "PredBat", "description": "Python application class AppDaemon starts. Predbat must use the value 'PredBat'."},
@@ -516,12 +532,14 @@ def build_apps_json_schema():
             if "max" in item:
                 value_schema["maximum"] = item["max"]
             if isinstance(item.get("options"), list):
-                value_schema["enum"] = item["options"]
+                value_schema["enum"] = list(item["options"])
+                if "default" in item and item["default"] not in value_schema["enum"]:
+                    value_schema["enum"].append(item["default"])
             if isinstance(item.get("default"), (str, int, float, bool, list, dict)):
                 value_schema["default"] = item["default"]
 
     # PredHeat already owns these entity mappings. Describing the nested keys
-    # here lets Monaco offer the same Home Assistant entity autocomplete inside
+    # here lets the editor offer the same Home Assistant entity autocomplete inside
     # the predheat block instead of encouraging duplicate Overview settings.
     properties["predheat"].update(
         {
@@ -926,8 +944,7 @@ class WebInterface(ComponentBase):
         Application and assert they exist, without booting a real TCP listener -
         the constructor for that Application performs no network I/O of its own.
         """
-        app.router.add_get("/annual", self.html_modern_ui if self.get_web_ui() == "modern" else self.annual_page.html_annual)
-        app.router.add_get("/legacy_annual", self.annual_page.html_annual)
+        app.router.add_get("/annual", self.annual_page.html_annual)
         app.router.add_post("/annual", self.annual_page.html_annual_post)
         app.router.add_post("/annual_reset", self.annual_page.html_annual_reset)
         app.router.add_post("/annual_array", self.annual_page.html_annual_array)
@@ -959,8 +976,7 @@ class WebInterface(ComponentBase):
         configured" when the component is not up yet - that per-request check is what stands in
         for a boot-time gate.
         """
-        app.router.add_get("/chat", self.html_modern_ui if self.get_web_ui() == "modern" else self.chat_page.html_chat)
-        app.router.add_get("/legacy_chat", self.chat_page.html_chat)
+        app.router.add_get("/chat", self.chat_page.html_chat)
         app.router.add_get("/chat/conversations", self.chat_page.html_chat_conversations)
         app.router.add_post("/chat/conversations", self.chat_page.html_chat_create)
         app.router.add_post("/chat/rename", self.chat_page.html_chat_rename)
@@ -982,27 +998,22 @@ class WebInterface(ComponentBase):
     async def start(self):
         # Start the web server
         app = web.Application()
-        modern_ui = self.get_web_ui() == "modern"
-        app.router.add_get("/", self.html_modern_ui if modern_ui else self.html_default)
-        app.router.add_get("/plan", self.html_modern_ui if modern_ui else self.html_plan_legacy)
-        app.router.add_get("/log", self.html_modern_ui if modern_ui else self.html_log)
-        app.router.add_get("/apps", self.html_modern_ui if modern_ui else self.html_apps)
-        app.router.add_get("/legacy_apps", self.html_apps)
+        app.router.add_get("/", self.html_default)
+        app.router.add_get("/plan", self.html_plan_legacy)
+        app.router.add_get("/log", self.html_log)
+        app.router.add_get("/apps", self.html_apps)
         app.router.add_post("/apps", self.html_apps_post)
         app.router.add_get("/apps_value", self.html_apps_value)
-        app.router.add_get("/charts", self.html_modern_ui if modern_ui else self.html_charts_legacy)
-        app.router.add_get("/legacy_charts", self.html_charts_legacy)
-        app.router.add_get("/config", self.html_modern_ui if modern_ui else self.html_config)
+        app.router.add_get("/charts", self.html_charts_legacy)
+        app.router.add_get("/config", self.html_config)
         app.router.add_get("/entity", self.html_entity)
         app.router.add_post("/entity", self.html_entity_post)
         app.router.add_post("/config", self.html_config_post)
-        app.router.add_get("/dash", self.html_modern_ui if modern_ui else self.html_dash_legacy)
+        app.router.add_get("/dash", self.html_dash_legacy)
         app.router.add_post("/dash", self.html_dash_post)
         app.router.add_get("/dash_content", self.html_dash_content)
-        app.router.add_get("/legacy_dash", self.html_dash_legacy)
-        app.router.add_get("/legacy_plan", self.html_plan_legacy)
-        app.router.add_get("/components", self.html_modern_ui if modern_ui else self.html_components)
-        app.router.add_get("/discovery", self.html_modern_ui if modern_ui else self.html_discovery)
+        app.router.add_get("/components", self.html_components)
+        app.router.add_get("/discovery", self.html_discovery)
         app.router.add_get("/api/discovery", self.html_api_discovery)
         app.router.add_get("/component_entities", self.html_component_entities)
         app.router.add_post("/component_restart", self.html_component_restart)
@@ -1016,11 +1027,11 @@ class WebInterface(ComponentBase):
         app.router.add_get("/debug_history_list", self.html_debug_history_list)
         app.router.add_get("/debug_history_download", self.html_debug_history_download)
         app.router.add_get("/debug_history_download_recent", self.html_debug_history_download_recent)
-        app.router.add_get("/compare", self.html_modern_ui if modern_ui else self.html_compare)
+        app.router.add_get("/compare", self.html_compare)
         app.router.add_post("/compare", self.html_compare_post)
         self._register_annual_routes(app)
         self._register_chat_routes(app)
-        app.router.add_get("/apps_editor", self.html_modern_ui if modern_ui else self.html_apps_editor)
+        app.router.add_get("/apps_editor", self.html_apps_editor)
         app.router.add_post("/apps_editor", self.html_apps_editor_post)
         app.router.add_get("/apps_editor_checksum", self.html_apps_editor_checksum)
         app.router.add_post("/plan_override", self.html_plan_override)
@@ -1045,10 +1056,10 @@ class WebInterface(ComponentBase):
         app.router.add_get("/api/components", self.html_api_components)
         app.router.add_get("/api/browse", self.html_api_browse)
         app.router.add_post("/api/login", self.html_api_login)
-        app.router.add_get("/browse", self.html_modern_ui if modern_ui else self.html_browse)
+        app.router.add_get("/browse", self.html_browse)
         app.router.add_get("/download", self.html_download_file)
         app.router.add_get("/images/{filename}", self.html_logo_image)
-        app.router.add_get("/internals", self.html_modern_ui if modern_ui else self.html_internals)
+        app.router.add_get("/internals", self.html_internals)
         app.router.add_get("/api/internals", self.html_api_internals)
         app.router.add_get("/api/internals/threads", self.html_api_internals_threads)
         app.router.add_get("/api/internals/download", self.html_api_internals_download)
@@ -1057,15 +1068,11 @@ class WebInterface(ComponentBase):
         app.router.add_get("/api/status", self.html_api_get_status)
         app.router.add_post("/api/dashboard_control", self.html_api_dashboard_control)
         app.router.add_get("/api/power_flow", self.html_api_power_flow)
-        app.router.add_get("/overview", self.html_modern_ui if modern_ui else self.html_dash_legacy)
+        app.router.add_get("/overview", self.html_dash_legacy)
         app.router.add_get("/metrics", metrics_handler)
         app.router.add_get("/metrics/json", metrics_json_handler)
         app.router.add_get("/metrics_dashboard", self.html_metrics_dashboard)
-        if modern_ui:
-            app.router.add_get("/docs", self.html_modern_ui)
-            app.router.add_get("/assets/{filename:.*}", self.html_modern_ui_asset)
-            app.router.add_get("/favicon.svg", self.html_modern_ui_asset)
-            app.router.add_get("/icons.svg", self.html_modern_ui_asset)
+        self._register_modern_ui_routes(app)
 
         # Notify plugin system that web interface is ready
         if hasattr(self.base, "plugin_system") and self.base.plugin_system:
@@ -3049,6 +3056,7 @@ chart.render();
                 "active": predbat_active,
                 "chat_enabled": self.chat_enabled(),
                 "load_ml_enabled": bool(self.base.get_arg("load_ml_enable", False)),
+                "predheat_enabled": bool(getattr(self.base, "predheat", None) and self.base.get_arg("predheat_enable", False)),
                 # Configuration health
                 "config_ok": config_errors == 0,
                 "config_errors": config_errors,
@@ -3213,6 +3221,7 @@ chart.render();
             return web.json_response(
                 {
                     "grid_power": grid_power,
+                    "updated_at": self.base.power_flow_updated_at,
                     "battery_power": battery_power,
                     "pv_power": pv_power,
                     "load_power": load_power,
@@ -3392,11 +3401,8 @@ chart.render();
 
     async def html_plan(self, request):
         """
-        Serve the selected plan interface.
+        Serve the classic plan interface.
         """
-        if self.get_web_ui() == "modern":
-            return await self.html_modern_ui(request)
-
         return await self.html_plan_legacy(request)
 
     async def html_plan_legacy(self, request):
@@ -3929,54 +3935,37 @@ chart.render();
             html_plan = None
         return await self.html_file("predbat_plan.html", html_plan)
 
-    def get_web_ui(self):
-        """
-        Return the selected web interface.
+    def _register_modern_ui_routes(self, app):
+        """Mount modern pages and their assets alongside the classic interface."""
+        app.router.add_get("/ui", self.html_modern_ui_redirect)
+        app.router.add_get("/ui/", self.html_modern_ui)
+        for page in ("dash", "plan", "overview", "charts", "entity", "compare", "annual", "chat", "config", "apps", "apps_editor", "components", "log", "browse", "discovery", "cards", "internals", "docs"):
+            app.router.add_get("/ui/" + page, self.html_modern_ui)
+        app.router.add_get("/ui/{filename:predbat_ui[^/]*}", self.html_modern_ui_asset)
 
-        Legacy remains the default so existing installations are
-        unchanged unless the modern UI is explicitly enabled.
-        """
-        return (
-            str(
-                self.get_arg(
-                    "web_ui",
-                    "legacy",
-                )
-            )
-            .strip()
-            .lower()
-        )
+    async def html_modern_ui_redirect(self, request):
+        """Keep relative assets and API calls anchored to the UI directory."""
+        return web.HTTPFound("./ui/", headers={"Cache-Control": "no-store"})
 
     async def html_modern_ui(self, request):
-        """Serve the bundled React entry point for a modern UI page."""
-        return await self.html_modern_ui_asset(request, "index.html")
+        """Serve the built React entry point for a modern UI page."""
+        return await self.html_modern_ui_asset(request, "predbat_ui.html")
 
     async def html_modern_ui_asset(self, request, filename=None):
-        """Serve one file from the bundled React archive."""
-        if filename is None:
-            filename = request.match_info.get("filename")
-            if filename:
-                filename = "assets/" + filename
-            else:
-                filename = request.path.rsplit("/", 1)[-1]
-
-        path = PurePosixPath(filename)
-        if path.is_absolute() or ".." in path.parts:
+        """Serve only flat, prefixed UI assets from the installation directory."""
+        filename = filename if filename is not None else request.match_info.get("filename", "")
+        if not re.fullmatch(r"predbat_ui(?:_[A-Za-z0-9_.-]+)?\.(?:html|js|css|webp|svg|png)", filename):
             raise web.HTTPNotFound()
-
-        archive_path = os.path.join(os.path.dirname(__file__), "frontend.zip")
-        try:
-            with zipfile.ZipFile(archive_path) as archive:
-                body = archive.read("dist/" + str(path))
-        except KeyError:
-            raise web.HTTPNotFound() from None
-        except (OSError, zipfile.BadZipFile) as error:
-            self.log("Warn: Modern web interface bundle is unavailable: {}".format(error))
-            return web.Response(status=503, text="Modern web interface bundle is unavailable")
-
-        content_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
-        cache_control = "no-store" if str(path) == "index.html" else "public, max-age=31536000, immutable"
-        return web.Response(body=body, content_type=content_type, headers={"Cache-Control": cache_control})
+        asset_path = os.path.join(os.path.dirname(__file__), filename)
+        if os.path.islink(asset_path) or not os.path.isfile(asset_path):
+            if filename == "predbat_ui.html":
+                return web.Response(status=503, text="Modern web interface files are unavailable")
+            raise web.HTTPNotFound()
+        response = UIFileResponse(asset_path, headers={"Cache-Control": "no-cache"})
+        if filename.endswith((".html", ".js", ".css", ".svg")):
+            response.headers["Vary"] = "Accept-Encoding"
+            response.enable_compression()
+        return response
 
     async def html_dash_content(self, request):
         """
@@ -3987,11 +3976,8 @@ chart.render();
 
     async def html_dash(self, request):
         """
-        Serve the selected dashboard interface.
+        Serve the classic dashboard interface.
         """
-        if self.get_web_ui() == "modern":
-            return await self.html_modern_ui(request)
-
         return await self.html_dash_legacy(request)
 
     async def html_dash_legacy(self, request):
@@ -4095,8 +4081,7 @@ chart.render();
             soc_kw_best = self.get_entity_results(self.prefix + ".soc_kw_best")
 
         # Earlier plans' one- and eight-hour forecasts are shifted onto the
-        # instant they predicted, allowing a direct comparison with Actual. Keep only
-        # points landing today, so old forecast history cannot stretch either chart backwards.
+        # instant they predicted, allowing a direct comparison with Actual.
         soc_best_history = self.get_history_with_now_attrs(self.prefix + ".soc_kw_best", 7)
         predicted_h1 = prune_today(history_attribute(soc_best_history, attributes=True, state_key="soc_h1"), self.now_utc, self.midnight_utc, prune=True, offset_minutes=60)
         predicted_h8 = prune_today(history_attribute(soc_best_history, attributes=True, state_key="soc_h8"), self.now_utc, self.midnight_utc, prune=True, offset_minutes=60 * 8)
@@ -4441,6 +4426,27 @@ chart.render();
             "series": series,
         }
 
+    def get_predheat_chart_data(self):
+        """Return PredHeat temperature history and its current heating forecast."""
+        predheat = getattr(self.base, "predheat", None)
+        enabled = bool(predheat and self.base.get_arg("predheat_enable", False))
+        series = {name: {} for name in ("internal_actual", "external_actual", "internal_forecast", "external_forecast", "target", "heat_to")}
+        if enabled:
+            for name in ("internal", "external"):
+                entity = predheat.prefix + "." + name + "_temp"
+                series[name + "_actual"] = prune_today(history_attribute(self.get_history_wrapper(entity, 1, required=False)), self.now_utc, self.midnight_utc, prune=True, prune_past_days=1)
+                # PredHeat publishes directly to entity state, not the Predbat dashboard cache.
+                series[name + "_forecast"] = self.get_state_wrapper(entity, attribute="results", default={}) or {}
+            series["target"] = self.get_state_wrapper(predheat.prefix + ".target_temp", attribute="results", default={}) or {}
+            series["heat_to"] = self.get_state_wrapper(predheat.prefix + ".heat_to_temp", attribute="results", default={}) or {}
+        return {
+            "chart": "predheat",
+            "ready": any(series.values()),
+            "enabled": enabled,
+            "generated_at": self.now_utc.strftime(TIME_FORMAT),
+            "series": series,
+        }
+
     async def html_api_chart_data(self, request):
         """Return chart data for the modern interface as JSON."""
         chart = request.query.get("chart", "battery").strip().lower()
@@ -4466,6 +4472,8 @@ chart.render();
             return web.json_response(self.get_carbon_chart_data())
         if chart == "loadml":
             return web.json_response(self.get_load_ml_chart_data())
+        if chart == "predheat":
+            return web.json_response(self.get_predheat_chart_data())
         return web.json_response({"error": "Unknown chart type"}, status=400)
 
     def get_chart(self, chart):
@@ -4664,8 +4672,6 @@ chart.render();
 
             # Sort timestamps and calculate deltas to get energy per interval
             if load_ml_forecast_energy:
-                from datetime import datetime
-
                 sorted_timestamps = sorted(load_ml_forecast_energy.keys())
                 prev_energy = 0
                 prev_timestamp = None
@@ -4676,8 +4682,8 @@ chart.render();
                     # Calculate actual interval in hours between this and previous timestamp
                     if prev_timestamp:
                         # Parse timestamps and calculate difference in hours
-                        curr_dt = datetime.strptime(timestamp, TIME_FORMAT)
-                        prev_dt = datetime.strptime(prev_timestamp, TIME_FORMAT)
+                        curr_dt = strptime_aware(timestamp, TIME_FORMAT)
+                        prev_dt = strptime_aware(prev_timestamp, TIME_FORMAT)
                         interval_hours = (curr_dt - prev_dt).total_seconds() / 3600.0
                         load_ml_forecast_power[timestamp] = dp4(energy_delta / interval_hours)
 
@@ -4914,40 +4920,36 @@ chart.render();
 
     async def html_charts(self, request):
         """
-        Serve the selected charts interface.
+        Serve the classic charts interface.
         """
-        if self.get_web_ui() == "modern":
-            return await self.html_modern_ui(request)
-
         return await self.html_charts_legacy(request)
 
     async def html_charts_legacy(self, request):
         """Render the legacy charts interface."""
         args = request.query
         chart = args.get("chart", "Battery")
-        chart_path = "./legacy_charts" if self.get_web_ui() == "modern" else "./charts"
-        self.default_page = "{}?chart={}".format(chart_path, chart)
+        self.default_page = "./charts?chart={}".format(chart)
         text = self.get_header("Predbat Charts", refresh=60 * 5)
         text += "<body>\n"
         text += get_charts_css()
 
         text += '<div class="charts-menu">'
         text += "<h3>Charts</h3> "
-        text += f'<a href="{chart_path}?chart=Battery" class="{"active" if chart == "Battery" else ""}">Battery</a>'
-        text += f'<a href="{chart_path}?chart=Power" class="{"active" if chart == "Power" else ""}">Power</a>'
-        text += f'<a href="{chart_path}?chart=Cost" class="{"active" if chart == "Cost" else ""}">Cost</a>'
-        text += f'<a href="{chart_path}?chart=Rates" class="{"active" if chart == "Rates" else ""}">Rates</a>'
-        text += f'<a href="{chart_path}?chart=InDay" class="{"active" if chart == "InDay" else ""}">InDay</a>'
-        text += f'<a href="{chart_path}?chart=PV" class="{"active" if chart == "PV" else ""}">PV</a>'
-        text += f'<a href="{chart_path}?chart=PV7" class="{"active" if chart == "PV7" else ""}">PV7</a>'
-        text += f'<a href="{chart_path}?chart=PVAccuracy" class="{"active" if chart == "PVAccuracy" else ""}">PVAccuracy</a>'
-        text += f'<a href="{chart_path}?chart=Savings" class="{"active" if chart == "Savings" else ""}">Savings</a>'
-        text += f'<a href="{chart_path}?chart=BatteryDegradation" class="{"active" if chart == "BatteryDegradation" else ""}">BatteryDegradation</a>'
-        text += f'<a href="{chart_path}?chart=MarginalCosts" class="{"active" if chart == "MarginalCosts" else ""}">MarginalCosts</a>'
+        text += f'<a href="./charts?chart=Battery" class="{"active" if chart == "Battery" else ""}">Battery</a>'
+        text += f'<a href="./charts?chart=Power" class="{"active" if chart == "Power" else ""}">Power</a>'
+        text += f'<a href="./charts?chart=Cost" class="{"active" if chart == "Cost" else ""}">Cost</a>'
+        text += f'<a href="./charts?chart=Rates" class="{"active" if chart == "Rates" else ""}">Rates</a>'
+        text += f'<a href="./charts?chart=InDay" class="{"active" if chart == "InDay" else ""}">InDay</a>'
+        text += f'<a href="./charts?chart=PV" class="{"active" if chart == "PV" else ""}">PV</a>'
+        text += f'<a href="./charts?chart=PV7" class="{"active" if chart == "PV7" else ""}">PV7</a>'
+        text += f'<a href="./charts?chart=PVAccuracy" class="{"active" if chart == "PVAccuracy" else ""}">PVAccuracy</a>'
+        text += f'<a href="./charts?chart=Savings" class="{"active" if chart == "Savings" else ""}">Savings</a>'
+        text += f'<a href="./charts?chart=BatteryDegradation" class="{"active" if chart == "BatteryDegradation" else ""}">BatteryDegradation</a>'
+        text += f'<a href="./charts?chart=MarginalCosts" class="{"active" if chart == "MarginalCosts" else ""}">MarginalCosts</a>'
         # Only show LoadML chart if ML is enabled
         if self.base.get_arg("load_ml_enable", False):
-            text += f'<a href="{chart_path}?chart=LoadML" class="{"active" if chart == "LoadML" else ""}">LoadML</a>'
-            text += f'<a href="{chart_path}?chart=LoadMLPower" class="{"active" if chart == "LoadMLPower" else ""}">LoadMLPower</a>'
+            text += f'<a href="./charts?chart=LoadML" class="{"active" if chart == "LoadML" else ""}">LoadML</a>'
+            text += f'<a href="./charts?chart=LoadMLPower" class="{"active" if chart == "LoadMLPower" else ""}">LoadMLPower</a>'
         text += "</div>"
 
         if chart != "MarginalCosts":
@@ -5612,8 +5614,7 @@ chart.render();
             actual_no_car = {}
 
         tariffs = []
-        compare_list, _ = check_compare_list(self.get_arg("compare_list", []))
-        for configured in compare_list:
+        for configured in self.get_arg("compare_list", []):
             tariff_id = configured.get("id", "")
             result = self.base.comparison.get_comparison(tariff_id) if self.base.comparison else {}
             metric_history = {}
@@ -6030,7 +6031,21 @@ chart.render();
         """
         Redirect to the default page
         """
-        return web.HTTPFound(self.default_page)
+        destination = json.dumps(self.default_page).replace("<", "\\u003c")
+        text = """<!doctype html><html><head><title>Predbat</title></head><body>
+<script>
+const key = 'predbat-interface:' + location.pathname;
+let modern = false;
+try {
+    if (new URLSearchParams(location.search).get('ui') === 'classic') localStorage.removeItem(key);
+    modern = localStorage.getItem(key) === 'modern';
+} catch {}
+location.replace(modern ? './ui/' : DESTINATION);
+</script>
+<a href="./dash">Open Predbat</a></body></html>""".replace(
+            "DESTINATION", destination
+        )
+        return web.Response(text=text, content_type="text/html", headers={"Cache-Control": "no-store"})
 
     def get_grid_power_icon(self):
         """
@@ -6238,8 +6253,19 @@ chart.render();
                 return web.json_response({"success": False, "message": "Unknown action"}, status=400)
 
             # Refresh plan
-            self.base.update_pending = True
-            self.base.plan_valid = False
+            # Setting a rate updates the manual rate input number,
+            # whose event already triggers a re-plan.
+            #
+            # Clearing a rate only updates the manual selector directly,
+            # so it needs to explicitly request a new plan here.
+            if action in [
+                "Clear Import",
+                "Clear Export",
+                "Clear Load",
+                "Clear SOC",
+            ]:
+                self.base.update_pending = True
+                self.base.plan_valid = False
 
             # Return html plan again
             self.log("Rate override processed successfully")
@@ -6296,8 +6322,8 @@ chart.render();
                     return web.json_response({"success": False, "message": "Unknown action"}, status=400)
 
             # Refresh plan
-            self.base.update_pending = True
-            self.base.plan_valid = False
+            # self.base.update_pending = True
+            # self.base.plan_valid = False
 
             # Return html plan again
             return web.json_response({"success": True}, status=200)

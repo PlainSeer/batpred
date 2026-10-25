@@ -156,6 +156,11 @@ IO_ADJUST_MAX_DISCOUNT = 3.0  # Maximum pence discount applied to the earliest I
 IO_ADJUST_MAX_PENALTY = 10.0  # Maximum pence penalty applied to the latest IOG slots
 IO_ADJUST_DISCOUNT_HORIZON_HOURS = 3.0  # Only discount IOG slots that start within this many hours of now
 
+# Octopus Intelligent "bird in hand" credit (see io_confirmed_credit_update()): score only, pence per kWh
+# stored in the current half hour of the dispatch run a car is charging in, divided by 1 + n for the nth half hour after
+# it. Kept well below any real price step so it only settles ties.
+IO_CONFIRMED_CREDIT = 0.1
+
 
 def slots_around(target_slots, slot_lengths):
     """
@@ -439,6 +444,9 @@ class Plan:
         "not charging" reading only counts from DYNAMIC_LOAD_CAR_START_MINUTES into the dispatch, while the
         car and charger wake up; "charging" counts anywhere. The grace is timed on the exact clock.
 
+        Any car's car_charging_now reading "charging" counts as charging for every car (see
+        dynamic_load_any_car_charging_now()), whatever the car's own sensor says.
+
         Without a sensor the low-load test stands in, but only when the car is inside the CT clamp
         (car_energy_reported_load): otherwise its charging never shows in the load at all. load_last_period
         averages the PREDICT_STEP minutes up to minutes_now, so it only counts when that whole window lies
@@ -450,12 +458,12 @@ class Plan:
         The live load has to be low too. Live load that is not low, or has no reading, makes a low window
         no evidence either way - it neither cancels the car nor resumes it.
         """
+        if self.dynamic_load_any_car_charging_now():
+            return False, DYNAMIC_LOAD_CAR_SENSOR_MINUTES, now
         if car_n in self.dynamic_load_car_sensors:
             charging = self.car_charging_now_reading(car_n)
             if charging is None:
                 return None, DYNAMIC_LOAD_CAR_SENSOR_MINUTES, now
-            if charging:
-                return False, DYNAMIC_LOAD_CAR_SENSOR_MINUTES, now
             if minute < dispatch_start + DYNAMIC_LOAD_CAR_START_MINUTES:
                 return None, DYNAMIC_LOAD_CAR_SENSOR_MINUTES, now
             return True, DYNAMIC_LOAD_CAR_SENSOR_MINUTES, now
@@ -480,6 +488,17 @@ class Plan:
                 return None, DYNAMIC_LOAD_CAR_LOAD_MINUTES, grid_now
             return True, DYNAMIC_LOAD_CAR_LOAD_MINUTES, grid_now
         return None, DYNAMIC_LOAD_CAR_LOAD_MINUTES, grid_now
+
+    def dynamic_load_any_car_charging_now(self):
+        """
+        Whether any car's car_charging_now entity reads charging right now.
+
+        Octopus links a dispatch to one car, but with two chargers Predbat cannot tell which one that car
+        is plugged into - myenergi automatic set-up numbers the Zappis by serial - so the car Predbat
+        calls 0 can read idle while the dispatch's car charges on the charger it calls 1. Any car charging
+        is taken as the dispatch running, so it is never cancelled for being on the other charger.
+        """
+        return any(self.car_charging_now_reading(car_n) for car_n in self.dynamic_load_car_sensors)
 
     def car_charging_now_reading(self, car_n):
         """
@@ -556,6 +575,61 @@ class Plan:
         """
         return self.octopus_intelligent_dynamic and self.dynamic_load_car_is_octopus(car_n) and not self.dispatch_billing_window()
 
+    def io_confirmed_credit_update(self, save=True):
+        """
+        Build io_confirmed_credit, the "bird in hand" credit the prediction gives the battery for charging in
+        the dispatch run a car is charging in now: {minute: pence per kWh stored}, empty when there is none.
+
+        A dispatch only makes the house cheap if the car really charges in it, and the car can be unplugged at
+        any time, so the half hour it is charging in now is the one certain part of the run. Charging there
+        scored the same as waiting for the fixed off-peak window when the battery looked able to wait, so the
+        planner waited and a house could run out first.
+
+        The run is boosted while a car is in one of its dispatches and the dispatch check has not cancelled it
+        (dynamic_load_car_effective) - the same decision that shows a cancelled slot with a "?". With
+        octopus_intelligent_trust_slots Off that means the car has been seen charging in it; where the check
+        does not apply (octopus_intelligent_dynamic Off, or the window billing rule) it means the dispatch has
+        started.
+
+        The run is the minutes from now that a dispatch made cheap (io_adjusted): a dispatch inside the fixed
+        off-peak window risks nothing. The credit is IO_CONFIRMED_CREDIT for the current half hour, divided by
+        1 + n for the nth after it, so the charge lands where it is least likely to vanish. It is score only
+        (metric_keep): cost is never touched, so a genuinely cheaper slot still wins.
+
+        Returns True when a run has just become boosted, so the fetch asks for a replan: with
+        octopus_intelligent_trust_slots On nothing else does, as a trusted dispatch starting changes no rates.
+        The incumbent plan was optimised without the credit, which is far smaller than
+        metric_min_improvement_plan, so io_confirmed_tiebreak lets should_replace_plan() take a plan that costs
+        no more on that one replan. Later replans compare two plans both scored with the credit, so the usual
+        hysteresis applies and the plan is not replaced every cycle of the run. With save False (compare.py)
+        the credit is built but the state is not advanced.
+        """
+        minute = self.dynamic_load_car_minute(self.now_utc_real)
+        boosted = any(self.dynamic_load_car_is_octopus(car_n) and not self.dynamic_load_car_effective.get(car_n, False) and self.dynamic_load_car_dispatch(car_n, minute) is not None for car_n in range(self.num_cars))
+
+        credit = {}
+        if boosted:
+            period_start = (self.minutes_now // 30) * 30
+            run_minute = self.minutes_now
+            while self.io_adjusted.get(run_minute, False) and run_minute < self.minutes_now + self.forecast_minutes:
+                credit[run_minute] = IO_CONFIRMED_CREDIT / (1 + (run_minute - period_start) // 30)
+                run_minute += 1
+        self.io_confirmed_credit = credit
+
+        active = bool(credit)
+        if not save:
+            return False
+        newly = active and not self.io_confirmed_active
+        if active != self.io_confirmed_active:
+            if active:
+                self.log("Octopus Intelligent: car charging in its dispatch, preferring battery charge in the run to {}".format(self.time_abs_str(max(credit) + 1)))
+            else:
+                self.log("Octopus Intelligent: dispatch run over or cancelled, no longer preferring battery charge in it")
+            self.io_confirmed_active = active
+        if newly:
+            self.io_confirmed_tiebreak = True
+        return newly
+
     def dynamic_load_car_strip_from(self, car_n):
         """
         The first minute (since midnight_utc) from which car_n's dispatches lose their cheap rate, or None
@@ -624,7 +698,7 @@ class Plan:
                 # from DYNAMIC_LOAD_CAR_CONFIRM_MINUTES into the half hour - the slot is trusted straight away
                 # either way. The load test only needs load that is not low to trust the slot, which a cooker or
                 # hot tub also gives; keeping the cheap rate needs load at the car's own charging rate
-                if car_n in self.dynamic_load_car_sensors:
+                if car_n in self.dynamic_load_car_sensors or self.dynamic_load_any_car_charging_now():
                     seen_minute = minute if minute % 30 >= DYNAMIC_LOAD_CAR_CONFIRM_MINUTES else None
                 elif self.load_last_period >= self.car_charging_threshold_kw():
                     seen_minute = self.minutes_now - 1
@@ -633,6 +707,12 @@ class Plan:
                 if seen_minute is not None:
                     period_end = self.midnight_utc + timedelta(minutes=round_out_to_period(int(seen_minute), int(seen_minute) + 1)[1])
                     self.dynamic_load_car_confirmed[car_n] = max(self.dynamic_load_car_confirmed.get(car_n, period_end), period_end)
+                    # Every confirmed half hour too, not only the latest: a dispatch too short to trust is only cheap
+                    # in one (dispatch_too_short()), and must stay so once a later half hour is confirmed as well
+                    periods = self.dynamic_load_car_confirmed_periods.setdefault(car_n, set())
+                    periods.add(period_end)
+                    oldest = self.midnight_utc - timedelta(days=2)
+                    periods.difference_update([period for period in periods if period < oldest])
             return False
         if not_charging:
             since = self.dynamic_load_car_since.setdefault(car_n, timed_at) if record else self.dynamic_load_car_since.get(car_n)
@@ -650,7 +730,9 @@ class Plan:
         - confirmed: the end of the half hour the car was last seen charging in (dynamic_load_car_strip_from()),
           while that half hour is still to come;
         - run: the dispatch the car is in, with the earliest start seen for it - the start band is timed from it;
-        - cancelled: the decision so far, which stands while there is no evidence either way.
+        - cancelled: the decision so far, which stands while there is no evidence either way;
+        - periods: every half hour the car was confirmed charging in (dynamic_load_car_confirmed_periods), as a
+          dispatch too short to trust stays cheap in one after it is over - today's cost is priced from them.
 
         All times are absolute, as minutes since midnight_utc mean something else after midnight. The "not
         charging since" clock is deliberately not kept: a restart is a stretch with no evidence, after which
@@ -661,14 +743,16 @@ class Plan:
         """
         now_minute = self.dynamic_load_car_minute(self.now_utc_real)
         confirmed_cars = {car_n: confirmed for car_n, confirmed in self.dynamic_load_car_confirmed.items() if self.dynamic_load_car_minutes_of(confirmed) > now_minute}
+        period_cars = {car_n: periods for car_n, periods in self.dynamic_load_car_confirmed_periods.items() if periods}
         cars = {}
-        for car_n in sorted(set(confirmed_cars) | set(self.dynamic_load_car_run)):
+        for car_n in sorted(set(confirmed_cars) | set(self.dynamic_load_car_run) | set(period_cars)):
             confirmed = confirmed_cars.get(car_n)
             run = self.dynamic_load_car_run.get(car_n)
             cars[str(car_n)] = {
                 "confirmed": confirmed.isoformat() if confirmed else None,
                 "run": {key: (self.midnight_utc + timedelta(minutes=run[key])).isoformat() for key in ("start", "end")} if run else None,
                 "cancelled": bool(self.dynamic_load_car_cancelled.get(car_n, False)),
+                "periods": [period.isoformat() for period in sorted(period_cars.get(car_n, []))],
             }
         return cars
 
@@ -712,7 +796,8 @@ class Plan:
 
         Only what is still current is taken: a confirmed half hour that has not ended yet, and the run and
         decision of a dispatch that has not ended yet. Anything older belongs to a dispatch the car has since
-        left, where the running check would have dropped it too.
+        left, where the running check would have dropped it too. The confirmed half hours of the last two days
+        are taken whole, as the running check keeps them that long.
         """
         storage = self.components.get_component("storage") if self.components else None
         if not storage or self.midnight_utc is None:
@@ -737,15 +822,19 @@ class Plan:
                 run = {name: self.dynamic_load_car_minutes_of(datetime.fromisoformat(car["run"][name])) for name in ("start", "end")} if car.get("run") else None
                 confirmed_current = confirmed is not None and self.dynamic_load_car_minutes_of(confirmed) > now_minute
                 run_current = run is not None and run["end"] > now_minute
+                oldest = self.midnight_utc - timedelta(days=2)
+                periods = {period for period in (datetime.fromisoformat(value) for value in car.get("periods") or []) if period >= oldest}
             except (ValueError, TypeError, KeyError, AttributeError):
                 continue
+            if periods:
+                self.dynamic_load_car_confirmed_periods.setdefault(car_n, set()).update(periods)
             if confirmed_current:
                 self.dynamic_load_car_confirmed[car_n] = confirmed
             if run_current:
                 # Whole minutes stay ints, as the slots they are compared with are
                 self.dynamic_load_car_run[car_n] = {name: int(value) if value == int(value) else value for name, value in run.items()}
                 self.dynamic_load_car_cancelled[car_n] = bool(car.get("cancelled", False))
-            if confirmed_current or run_current:
+            if confirmed_current or run_current or periods:
                 restored.append(car_n)
         if restored:
             self.log("Octopus Intelligent: restored the dispatch state of car(s) {} from storage".format(restored))
@@ -887,6 +976,9 @@ class Plan:
                 due = True
         # The poll starts the grace clock and confirms half hours too
         self.dynamic_load_car_save()
+        # ...and holds the half hour a dispatch is running in: one too short for any 5 minute cycle to see
+        # running, once confirmed, is otherwise at the day rate until Octopus lists it as completed (#5520)
+        self.octopus_held_update(now)
 
         if due:
             self.log("Octopus Intelligent: car charging state changed, will re-plan")
@@ -1795,18 +1887,26 @@ class Plan:
             prev_mode = mode
         return segments
 
-    def should_replace_plan(self, metric_prev, metric_new, fragmentation_prev, fragmentation_new):
+    def should_replace_plan(self, metric_prev, metric_new, fragmentation_prev, fragmentation_new, cost_prev=None, cost_new=None):
         """Decide whether to adopt the freshly optimised plan over the incumbent.
 
         The new plan is adopted when it is better by at least metric_min_improvement_plan (the existing
         anti-jitter behaviour). On a near-tie within that band it is also adopted when it is no worse on cost
         and strictly less fragmented, so a cleaner single export block can replace a locked-in split schedule
         without churning the plan for tiny cost changes. Lower metric is better, so improvement is prev - new.
+
+        On the first replan after a dispatch run becomes boosted (io_confirmed_tiebreak, see
+        io_confirmed_credit_update()) a near-tie is also won by a plan that scores better and costs no more
+        (cost_prev/cost_new, to a hundredth of a penny): the incumbent was optimised before the score-only
+        credit existed, and the credit is far smaller than the band, so it would otherwise never take effect.
+        Only that once - later in the run both plans carry the credit, and the band keeps the plan steady.
         """
         improvement = metric_prev - metric_new
         if improvement >= self.metric_min_improvement_plan:
             return True
         if improvement >= 0 and fragmentation_new < fragmentation_prev:
+            return True
+        if self.io_confirmed_tiebreak and improvement > 0 and cost_prev is not None and cost_new is not None and dp2(cost_new) <= dp2(cost_prev):
             return True
         return False
 
@@ -2284,7 +2384,7 @@ class Plan:
                 self.log("Previous plan best metric is {} (cost {}) and new plan best metric is {} (cost {})".format(dp2(metric_prev), dp2(cost_prev), dp2(metric), dp2(cost)))
                 fragmentation_prev = self.plan_fragmentation(score_prev[1], score_prev[0], score_prev[2], score_prev[3])
                 fragmentation_new = self.plan_fragmentation(score_new[1], score_new[0], score_new[2], score_new[3])
-                if not self.should_replace_plan(metric_prev, metric, fragmentation_prev, fragmentation_new):
+                if not self.should_replace_plan(metric_prev, metric, fragmentation_prev, fragmentation_new, cost_prev=cost_prev, cost_new=cost):
                     self.log("New plan metric is not significantly better (metric_min_improvement_plan {}) than previous plan, using previous plan".format(self.metric_min_improvement_plan))
                     self.charge_window_best = clone_windows(charge_window_best_prev)
                     self.charge_limit_best = charge_limit_best_prev.copy()
@@ -2295,11 +2395,15 @@ class Plan:
                     preclip_new = preclip_prev
                 elif (metric_prev - metric) >= self.metric_min_improvement_plan:
                     self.log("New plan metric is significantly better from previous plan, using new plan")
+                elif fragmentation_new >= fragmentation_prev:
+                    self.log("New plan costs no more and prefers the Intelligent dispatch run now in hand, using new plan")
                 else:
                     self.log("New plan is a cost-neutral improvement but less fragmented ({} vs {} segments), using new plan".format(fragmentation_new, fragmentation_prev))
 
             # Carry the pre-clip snapshot of whichever plan we kept into the next cycle
             self.plan_preclip = preclip_new
+            # The plan now in force has been weighed with the bird-in-hand credit, so its one-off tie-break is spent
+            self.io_confirmed_tiebreak = False
 
             # Plan is now valid
             self.log("Plan valid is now true after recompute was {}".format(self.plan_valid))
@@ -3529,10 +3633,19 @@ class Plan:
         Each active charge/export slot inside the record window is trialled in turn: the slot is
         removed (export -> 100, charge -> 0) and the whole plan re-simulated in the nominal (50%)
         scenario only - one simulation per trial via run_prediction_metric(nominal_only=True). The
-        removal is kept when the nominal metric does not get worse, so slots whose value exists only
-        in the pv10/pv90 branches (or nowhere at all - phantom exports, dead freezes) are dropped.
-        If the pessimistic scenario materialises in reality, the next plan recompute re-creates a
-        genuine slot from actual state, so nothing is permanently lost.
+        removal is kept when the nominal metric does not get worse.
+
+        A removal that leaves the nominal metric unchanged (within eps) means the slot is dead in the
+        central forecast - phantom exports, dead freezes, charges that never charge - and it is
+        dropped on that alone, whatever the pv10/pv90 branches say (the #4453 phantoms only looked
+        valuable through a pv10 modelling quirk).
+
+        A removal that makes the nominal metric better is a trade-off, not a dead slot: the slot moves
+        real energy, and its value lies in the pv10/pv90 branches - a charge that buffers against a
+        load overrun, or an export that makes room for pv90 solar. Such a slot is only dropped when
+        the full blended metric does not get worse either. The window it uses can close before the
+        risk it covers would arrive (a cheap overnight rate ends hours before the evening shortfall),
+        so a later replan cannot be relied on to put it back.
 
         Runs after the pre-clip scoring snapshot (see calculate_plan), so plan selection still
         compares plans as optimised (#4403). Manual windows are preserved. Later removals are
@@ -3549,6 +3662,7 @@ class Plan:
         eps = 0.02
         record_limit = self.end_record + self.minutes_now
         baseline = None
+        blended_baseline = None
         start_metric = None
         pruned = 0
         trials = 0
@@ -3568,13 +3682,42 @@ class Plan:
                 limits[window_n] = off_value
                 trial = self.run_prediction_metric(self.charge_limit_best, self.charge_window_best, self.export_window_best, self.export_limits_best, end_record=self.end_record, nominal_only=True)[0]
                 trials += 1
-                if trial <= baseline + eps:
+                if trial > baseline + eps:
+                    limits[window_n] = limit
+                    continue
+
+                if trial < baseline - eps:
+                    # The slot changes the nominal outcome, so it is a trade-off rather than dead -
+                    # only drop it if the blended plan does not pay for it
+                    blended_trial = self.run_prediction_metric(self.charge_limit_best, self.charge_window_best, self.export_window_best, self.export_limits_best, end_record=self.end_record)[0]
+                    if blended_baseline is None:
+                        limits[window_n] = limit
+                        blended_baseline = self.run_prediction_metric(self.charge_limit_best, self.charge_window_best, self.export_window_best, self.export_limits_best, end_record=self.end_record)[0]
+                        limits[window_n] = off_value
+                    if blended_trial > blended_baseline + eps:
+                        if self.debug_enable:
+                            self.log(
+                                "Prune kept hedge {} slot {} {}-{} limit {} - nominal metric {} vs baseline {} but blended metric {} vs baseline {}".format(
+                                    typ, window_n, self.time_abs_str(window["start"]), self.time_abs_str(window["end"]), limit, dp2(trial), dp2(baseline), dp2(blended_trial), dp2(blended_baseline)
+                                )
+                            )
+                        limits[window_n] = limit
+                        continue
+                    if self.debug_enable:
+                        self.log(
+                            "Prune trade-off {} slot {} {}-{} limit {} - nominal metric {} vs baseline {}, blended metric {} vs baseline {}".format(
+                                typ, window_n, self.time_abs_str(window["start"]), self.time_abs_str(window["end"]), limit, dp2(trial), dp2(baseline), dp2(blended_trial), dp2(blended_baseline)
+                            )
+                        )
+                    blended_baseline = blended_trial
+                else:
+                    # Dead slot - the blended metric may still move, so measure it afresh if needed
+                    blended_baseline = None
                     if self.debug_enable:
                         self.log("Prune dead {} slot {} {}-{} limit {} - nominal metric {} vs baseline {}".format(typ, window_n, self.time_abs_str(window["start"]), self.time_abs_str(window["end"]), limit, dp2(trial), dp2(baseline)))
-                    baseline = trial
-                    pruned += 1
-                else:
-                    limits[window_n] = limit
+
+                baseline = trial
+                pruned += 1
         if pruned:
             # The trials run on the nominal scenario only, so report the full metric and cost of the
             # pruned plan rather than the nominal figure the trials compared on

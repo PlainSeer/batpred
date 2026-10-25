@@ -10,8 +10,8 @@
 
 import asyncio
 import os
-from datetime import timedelta
-from types import SimpleNamespace
+from aiohttp.web import FileResponse, Application
+from tests.test_web_modern_ui import run_web_modern_ui_tests
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from web import WebInterface, is_data_numerical
@@ -38,25 +38,37 @@ def run_web_functions_tests(my_predbat):
 
     web = make_web(my_predbat)
     prefix = my_predbat.prefix
+    failed += run_web_modern_ui_tests()
 
-    print("Test: legacy UI is the default and the bundled modern UI is selectable")
-    had_web_ui = "web_ui" in my_predbat.args
-    original_web_ui = my_predbat.args.get("web_ui")
-    my_predbat.args.pop("web_ui", None)
-    if web.get_web_ui() != "legacy":
-        print("  ERROR: missing web_ui should select the legacy interface")
+    modern_response = asyncio.run(web.html_modern_ui(None))
+    if modern_response.status != 200 or not isinstance(modern_response, FileResponse):
+        print("  ERROR: modern interface is unavailable")
         failed += 1
-    my_predbat.args["web_ui"] = "modern"
-    modern_response = asyncio.run(web.html_plan(None))
-    if modern_response.status != 200 or '<div id="root"></div>' not in modern_response.text:
-        print("  ERROR: web_ui modern did not serve the bundled React interface")
-        failed += 1
-    if had_web_ui:
-        my_predbat.args["web_ui"] = original_web_ui
-    else:
-        my_predbat.args.pop("web_ui", None)
 
-    failed += run_modern_ui_override_regression_tests(my_predbat)
+    print("Test: both interfaces register together without a configuration selector")
+    app = Application()
+    runner = MagicMock(setup=AsyncMock(), cleanup=AsyncMock())
+    site = MagicMock(start=AsyncMock())
+    old_stop = web.api_stop
+    web.api_stop = True
+    try:
+        with patch("web.web.Application", return_value=app), patch("web.web.AppRunner", return_value=runner), patch("web.web.TCPSite", return_value=site):
+            asyncio.run(web.start())
+        routes = {(route.method, route.resource.canonical): route.handler for route in app.router.routes()}
+        for path, handler in (
+            ("/", web.html_default),
+            ("/plan", web.html_plan_legacy),
+            ("/apps", web.html_apps),
+            ("/ui/plan", web.html_modern_ui),
+            ("/ui/apps", web.html_modern_ui),
+            ("/annual", web.annual_page.html_annual),
+            ("/chat", web.chat_page.html_chat),
+        ):
+            assert routes[("GET", path)] == handler, path
+        assert routes[("POST", "/apps")] == web.html_apps_post
+        assert not any(path.startswith("/legacy_") for _, path in routes)
+    finally:
+        web.api_stop = old_stop
 
     charging_entity = "binary_sensor." + prefix + "_charging"
     exporting_entity = "binary_sensor." + prefix + "_exporting"
@@ -376,10 +388,6 @@ def run_compare_empty_state_tests(my_predbat, web):
     fake_comparison.get_comparison.side_effect = lambda tariff_id: {"entity_id": "predbat.compare_tariff_2024", "html": "NUMERIC_ID_PLAN"} if tariff_id == "2024" else {}
     try:
         with patch.object(my_predbat, "comparison", fake_comparison):
-            modern_data = web.get_compare_data()
-            if [tariff["id"] for tariff in modern_data["tariffs"]] != ["2024"]:
-                print("  ERROR: modern Compare API should skip malformed entries and normalise numeric IDs")
-                failed += 1
             text = asyncio.run(web.html_compare(None)).text
     except Exception as exc:
         text = None
@@ -620,31 +628,6 @@ def run_web_logo_image_tests(my_predbat):
     return failed
 
 
-def run_modern_ui_override_regression_tests(my_predbat):
-    """Web overrides must request a new plan without relying on HA events."""
-    web = make_web(my_predbat)
-    time_str = (my_predbat.now_utc + timedelta(hours=1)).strftime("%H:%M")
-    previous = (my_predbat.update_pending, my_predbat.plan_valid)
-    failed = 0
-    print("Test: all web plan and rate overrides immediately invalidate the plan")
-    actions = [(web.html_plan_override, action) for action in ("Manual Demand", "Manual Charge", "Manual Export", "Manual Freeze Charge", "Manual Freeze Export", "Clear")] + [
-        (web.html_rate_override, action) for action in ("Set Import", "Clear Import", "Set Export", "Clear Export", "Set Load", "Clear Load", "Set SOC", "Clear SOC", "Set SOC Max", "Clear SOC Max")
-    ]
-    try:
-        with patch.object(my_predbat, "async_manual_select", new=AsyncMock()), patch.object(my_predbat, "manual_rates", return_value={}), patch.object(web, "set_state_external", new=AsyncMock()):
-            for handler, action in actions:
-                request = SimpleNamespace(post=AsyncMock(return_value={"time": time_str, "action": action, "rate": "10"}))
-                my_predbat.update_pending = False
-                my_predbat.plan_valid = True
-                response = asyncio.run(handler(request))
-                if response.status != 200 or not my_predbat.update_pending or my_predbat.plan_valid:
-                    print("  ERROR: {} did not request immediate replanning".format(action))
-                    failed += 1
-    finally:
-        my_predbat.update_pending, my_predbat.plan_valid = previous
-    return failed
-
-
 def run_web_dark_mode_preference_tests(my_predbat):
     """Unit tests for dark mode falling back to the OS/browser prefers-color-scheme setting (issue #4800)."""
     failed = 0
@@ -689,37 +672,6 @@ def run_web_dark_mode_preference_tests(my_predbat):
     if "darkModeMediaQuery.addListener" not in header:
         print("  ERROR: expected a fallback to the deprecated addListener() for older Safari/Chrome")
         failed += 1
-
-    print("Test: the menu offers System, Light and Dark with an accessible theme selector")
-    from web_helper import get_menu_html
-
-    menu = get_menu_html(False, "./dash", [], "v1.0", "")
-    if 'id="theme-mode" aria-label="Theme" onchange="setThemeMode(this.value)"' not in menu or any(f'<option value="{mode}">{mode.title()}</option>' not in menu for mode in ("system", "light", "dark")):
-        print("  ERROR: expected an accessible System / Light / Dark selector")
-        failed += 1
-
-    print("Test: System clears the existing override; Light and Dark preserve the existing storage format")
-    setter_start = header.find("function setThemeMode(mode)")
-    setter_end = header.find("\n}", setter_start)
-    setter = header[setter_start:setter_end]
-    if "localStorage.removeItem('darkMode')" not in setter or "mode === 'dark' ? 'true' : 'false'" not in setter or "location.reload();" not in setter:
-        print("  ERROR: expected System to remove the override and explicit modes to persist before reloading")
-        failed += 1
-
-    # Run the actual generated JavaScript when Node.js is available, without a browser or live instance.
-    import shutil
-    import subprocess
-    import sys
-
-    node = shutil.which("node")
-    if node:
-        result = subprocess.run([node, os.path.join(os.path.dirname(__file__), "test_web_theme.cjs"), sys.executable], capture_output=True, text=True)
-        print(result.stdout, end="")
-        if result.returncode:
-            print(result.stderr)
-            failed += 1
-    else:
-        print("  SKIP: JavaScript behaviour tests require Node.js")
 
     print("**** Web dark mode preference tests completed ****")
     return failed

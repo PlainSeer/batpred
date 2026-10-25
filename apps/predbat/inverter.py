@@ -46,9 +46,14 @@ from const import (
     EXPORT_LIMIT_DEFAULT_W,
 )
 from control_ledger import generation_from_state, OWNED, UNOWNED
-from utils import calc_percent_limit, compute_window_minutes, dp0, dp1, dp2, dp3, dp4, is_entity_id, time_string_to_stamp, minute_data, minute_data_state, window2minutes, pack_export_limit
+from utils import calc_percent_limit, compute_window_minutes, dp0, dp1, dp2, dp3, dp4, is_entity_id, time_string_to_stamp, minute_data, minute_data_state, window2minutes, pack_export_limit, strptime_aware
 
 TIME_FORMAT_HMS = "%H:%M:%S"
+
+# Largest SoC jump (percentage points) between consecutive readings that the charge curve learner
+# accepts as genuine. Wide enough for inverters that report SoC in 5% steps; a larger jump is a
+# glitch (e.g. a stray 0% reading) and would otherwise stamp one sample across a huge SoC range.
+CHARGE_CURVE_MAX_SOC_STEP = 10
 
 # Sentinel for "this side has committed nothing yet", distinct from any real commit key a caller
 # might use - including None, which adjust_charge_window() can legitimately produce for an unset
@@ -325,7 +330,17 @@ class Inverter:
         Create a missing inverter argument which will be assigned to a dummy entity
         """
         if (arg not in self.base.args) or (not isinstance(self.base.args[arg], list)):
-            self.base.args[arg] = [default, default, default, default]
+            # Padded with None rather than the default, for the same reason as the short-list branch
+            # below: the caller overwrites [self.id] with its dummy entity straight afterwards, so a
+            # bare default left in another inverter's slot reads back as "configured" there too - and
+            # rate_controls() then takes a sibling's default number for a bound entity (#5359)
+            single_value = self.base.args.get(arg)
+            self.base.args[arg] = [default if i == self.id else None for i in range(4)]
+            if self.id > 0 and single_value is not None:
+                # A single apps.yaml value is inverter 0's (see user_configured_entity()), so another
+                # inverter making its dummy must not throw it away - inverter 0 would lose its own
+                # entity and read and write the default in its place
+                self.base.args[arg][0] = single_value
         elif len(self.base.args[arg]) <= self.id:
             # A list that stops short of this inverter is just as missing for it as no list at all,
             # and every caller assigns into [self.id] straight afterwards - so a short one raised
@@ -357,7 +372,7 @@ class Inverter:
             # slot may by now hold the dummy an earlier refresh wrote there
             raw = raw[self.id] if self.id < len(raw) else None
         elif self.id > 0:
-            # A single value is inverter 0's, as create_missing_arg() has always treated it
+            # A single value is inverter 0's, which create_missing_arg() keeps in slot 0
             raw = None
         # Judged on what apps.yaml itself says, not just that it said something: a placeholder such as
         # Sofar's '00:00:00' is set, but the live slot holds Predbat's own dummy from the first cycle on
@@ -1328,7 +1343,7 @@ class Inverter:
             soc_label = "soc_percent"
         else:
             soc_kwh_percent = False
-            soc_label = "soc_kwh"
+            soc_label = "soc_kw"
             soc_kwh_sensor = self.base.get_arg("soc_kw", indirect=False, index=self.id)
 
         if discharge:
@@ -1343,10 +1358,6 @@ class Inverter:
 
         final_curve = {}
         final_curve_count = {}
-        soc_kwh = []
-        charge_rate = []
-        battery_power = []
-        predbat_status = []
 
         if discharge:
             max_power = int(self.battery_rate_max_discharge * MINUTE_WATT)
@@ -1494,6 +1505,9 @@ class Inverter:
                                     if total_power == 0:
                                         # No power data, so skip this data point
                                         break
+                                    if target_minute not in soc_kwh or abs(previous_point - data_point) > CHARGE_CURVE_MAX_SOC_STEP or abs(data_point - this_soc) > CHARGE_CURVE_MAX_SOC_STEP:
+                                        # Missing or implausible SoC reading at either end of the step, skip this sample (#5259)
+                                        break
                                     if discharge:
                                         this_soc -= 1
                                     else:
@@ -1618,12 +1632,18 @@ class Inverter:
                         )
                     )
             else:
-                self.log(
-                    "Warn: Inverter {} Cannot find battery {} curve (missing history), one of the required settings for {}, {}_rate, battery_power and predbat.status do not have history, check apps.yaml".format(self.id, curve_type, soc_label, curve_type)
-                )
-                self.log("Warn: Inverter {} Sensor history data lengths: {} {}, {}_rate {}, battery_power {}, predbat_status {}".format(self.id, soc_label, len(soc_kwh), curve_type, len(charge_rate), len(battery_power), len(predbat_status)))
+                history_checks = [
+                    (soc_label, soc_kwh_sensor, soc_kwh_data),
+                    ("{}_rate".format(curve_type), charge_rate_sensor, charge_rate_data),
+                    ("battery_power", battery_power_sensor, battery_power_data),
+                    ("predbat.status", predbat_status_sensor, predbat_status_data),
+                ]
+                no_history = ["{} ({})".format(setting, entity_id) for setting, entity_id, data in history_checks if not data]
+                self.log("Warn: Inverter {} Cannot find battery {} curve (missing history), no history found for {} - check the entity name in apps.yaml and that Home Assistant is recording its history".format(self.id, curve_type, ", ".join(no_history)))
+                self.log("Warn: Inverter {} Sensor history record counts: {}".format(self.id, ", ".join("{} {}".format(setting, len(data[0]) if data else 0) for setting, entity_id, data in history_checks)))
         else:
-            self.log("Warn: Inverter {} Cannot find battery {} curve (settings missing), one of the required settings for {}, {}_rate and battery_power are missing from apps.yaml".format(self.id, curve_type, soc_label, curve_type))
+            missing_settings = [setting for setting, entity_id in [(soc_label, soc_kwh_sensor), ("{}_rate".format(curve_type), charge_rate_sensor), ("battery_power", battery_power_sensor)] if not entity_id]
+            self.log("Warn: Inverter {} Cannot find battery {} curve (settings missing), {} not set in apps.yaml".format(self.id, curve_type, ", ".join(missing_settings)))
         return {}
 
     def create_entity(self, entity_name, value, uom=None, device_class=None, icon=None):
@@ -3871,13 +3891,15 @@ class Inverter:
             self.sleep(self.inv_write_and_poll_sleep)
             state = self.base.get_state_wrapper(entity_id, refresh=True)
             try:
-                time_pressed = datetime.strptime(state, TIME_FORMAT_SECONDS)
+                time_pressed = strptime_aware(state, TIME_FORMAT_SECONDS)
             except Exception as e:
                 self.base.log(f"Inverter {self.id} Error parsing timestamp for {entity_id}: {e}")
                 continue
 
             now_local = datetime.now(local_tz)
-            if (now_local - time_pressed).seconds < 10:
+            # total_seconds(), not .seconds: .seconds is normalised into [0, 86399], so a stamp a
+            # second ahead of our clock read as ~86399s stale and a days-old one read as fresh (batpred#5694).
+            if abs((now_local - time_pressed).total_seconds()) < 10:
                 self.base.log(f"Inverter {self.id} successfully pressed button {entity_id}")
                 # Counted for the same reason as the toggle-button path above (batpred#4712).
                 self.count_register_writes += 1

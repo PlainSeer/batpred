@@ -165,7 +165,8 @@ class UserInterface:
             if combine:
                 final = 0
                 for item in value:
-                    got = self.resolve_arg(arg, item, default=default, indirect=True)
+                    # Convert each entry before summing: one sensor in kW among values in W would otherwise be added as W
+                    got = self.resolve_arg(arg, item, default=default, indirect=True, required_unit=required_unit)
                     try:
                         final += float(got)
                     except (ValueError, TypeError):
@@ -1838,7 +1839,13 @@ class UserInterface:
         self.log("Update event {} {} {}".format(event, data, kwargs))
         if data and data.get("service", "") == "install":
             service_data = data.get("service_data", {})
-            if service_data.get("entity_id", "") == "update.predbat_version":
+            entities = service_data.get("entity_id", [])
+
+            # Can be a string or an array, the HA update card sends an array
+            if isinstance(entities, str):
+                entities = [entities]
+
+            if "update.predbat_version" in entities:
                 latest = self.releases.get("latest", None)
                 if latest:
                     self.log("Requested install of latest Predbat version {}".format(latest))

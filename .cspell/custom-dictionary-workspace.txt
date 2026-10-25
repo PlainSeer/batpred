@@ -6,6 +6,7 @@ activepower
 adata
 adbase
 afci
+afewyards
 agentic
 AIO
 AIO's
@@ -17,9 +18,11 @@ Alertfeed
 allclose
 alphaess
 am2
+anker
 annualform
 Anson
 antiphase
+antireflux
 apexcharts
 apikey
 appdaemon
@@ -33,6 +36,7 @@ armhf
 armv
 ASHP
 asn
+astimezone
 asyncio
 atfork
 atleast
@@ -42,6 +46,7 @@ autoflake
 automations
 autopep
 autoupdate
+ax1
 axvline
 axvspan
 Backfeed
@@ -71,6 +76,7 @@ byok
 cadata
 calcsize
 calib
+calvind
 Cantarell
 cbat
 CDLL
@@ -89,8 +95,8 @@ chargehold
 chargelater
 chargelimit
 chargepower
-chartjs
 CHECKCODE
+chg
 Chrg
 citem
 cloudfront
@@ -168,8 +174,10 @@ dlimit
 dlopen
 dnoregion
 docstrings
+dschg
 dstamp
 dstart
+dtu
 dtype
 dwindow
 eauth
@@ -212,10 +220,12 @@ epvtoday
 errno
 ESSAPI
 ETIMEDOUT
+eto
 etoday
 etok
 euids
 EVAC
+evc
 EVDC
 evenodd
 evergen
@@ -268,6 +278,7 @@ giv
 GivEnergy
 givtcp
 gmtime
+gndean
 gnueabihf
 GOELEC
 goldens
@@ -278,6 +289,8 @@ gridconsumptionpower
 Groq
 growatt
 growattsph
+guoxia
+guoxiatech
 GWMQTT
 HACS
 hadashboard
@@ -311,9 +324,11 @@ idag
 idef
 idetails
 idxs
+iess
 iflux
 importlimit
 inday
+indra
 inteless
 INTELLI
 intelligentdevice
@@ -324,6 +339,8 @@ inva
 invb
 invbatpower
 invname
+invopop
+iot
 IPPROTO
 isinstance
 isoformat
@@ -339,6 +356,7 @@ kaiming
 keepalive
 kellerza
 keydb
+keymap
 khtml
 killall
 Kiritimati
@@ -367,6 +385,8 @@ linebreak
 linecap
 linejoin
 linestyle
+Liskov
+lmt
 loadml
 loadmlpower
 loadspower
@@ -379,6 +399,8 @@ lookback
 lpignore
 lstrip
 luxpower
+luxpowertek
+luxpython
 malloc
 mallopt
 markdownlint
@@ -400,6 +422,7 @@ metricmid
 microinverters
 middlebox
 middleboxes
+milli
 minb
 minmax
 minsoc
@@ -432,7 +455,6 @@ multiarray
 myaccount
 myenergi
 mypy
-namelist
 nanmean
 nanstd
 nattribute
@@ -487,12 +509,15 @@ oversizing
 overvoltage
 ownerapi
 pac
+packettypes
+paho
 parseable
 partlycloudy
 pathlib
 pbat
 pbgw
 pcharging
+pcsenmap
 pdata
 pdetails
 pendings
@@ -505,6 +530,7 @@ pitem
 pkwh
 plenticore
 pload
+plugncharge
 pmeter
 poinv
 popv
@@ -532,6 +558,7 @@ pseudonymised
 pseudonymises
 psum
 pthread
+puback
 pvbat
 pvenergytotal
 pvlib
@@ -540,6 +567,7 @@ PVONLY
 pvpower
 pvwatts
 pwindow
+pwr
 pyjwt
 pylint
 pymyenergi
@@ -556,6 +584,7 @@ rarr
 reactivepower
 readback
 readbacks
+reasoncodes
 recp
 redownload
 Referer
@@ -574,7 +603,6 @@ resultmid
 retryable
 reweight
 reweighted
-rglob
 rname
 Roboto
 rowspan
@@ -605,6 +633,8 @@ setpoints
 setstate
 SFMB
 sg05lp1
+shiki
+shikijs
 SIGALRM
 sigcloud
 sigen
@@ -617,6 +647,7 @@ slugified
 slugifies
 slugify
 slugifying
+smartflex
 snakeviz
 snprintf
 socb
@@ -635,6 +666,7 @@ solaxmodbus
 Solcast
 soliscloud
 solisx
+solix
 sourcery
 Southwell
 sparkline
@@ -652,6 +684,7 @@ Stromligning
 strptime
 strtod
 Strømligning
+suback
 subclassing
 submessage
 substep
@@ -673,7 +706,6 @@ tdiff
 temperation
 Teslemetry
 testname
-testzip
 thirdparty
 threadpool
 threadpoolctl
@@ -706,6 +738,7 @@ treforsiphone
 treforsouthwell
 TRGT
 triggerable
+trydan
 tunables
 twinx
 typecode
@@ -725,7 +758,6 @@ unflushed
 unhashable
 unindexed
 unnormalised
-unoccluded
 unparseable
 unpickled
 unpickles
@@ -765,6 +797,7 @@ worktree
 writeonly
 wrongsha
 wwxxabcdefyyzz
+x1
 xaxis
 xaxistooltip
 xlabel
@@ -772,6 +805,7 @@ xlim
 xload
 Xmark
 xrtkq
+xtest
 xticks
 xxabcdefyy
 yaxis
@@ -784,3 +818,4 @@ zappi
 zappis
 zcat
 zigbee
+zoneinfo

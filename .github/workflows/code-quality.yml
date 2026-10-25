@@ -3,7 +3,8 @@ on:
   pull_request:
   push:
     branches:
-    - 'review/predbat-v9.4.1-release-modern-ui-20261018'
+    - main
+    - 'review/predbat-v9.5.0-modern-ui-20261025'
 jobs:
   pre-commit:
     runs-on: ubuntu-latest
@@ -62,13 +63,12 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/review/predbat-v9.4.1-release-modern-ui-20261018'
     permissions:
       contents: write
     steps:
     - uses: actions/checkout@v4
       with:
-        ref: review/predbat-v9.4.1-release-modern-ui-20261018
+        ref: ${{ github.head_ref || github.ref_name }}
     - uses: actions/setup-node@v4
       with:
         node-version: '24'
@@ -93,16 +93,12 @@ jobs:
     - name: Build production UI
       working-directory: frontend
       run: npm run build
-    - name: Verify checked-in bundle matches fresh build
+    - name: Verify installed UI files match fresh build
       run: |
-        python3 - <<'PY'
-        from pathlib import Path
-        import zipfile
-        expected = {"dist/" + str(path.relative_to("frontend/dist")): path.read_bytes() for path in Path("frontend/dist").rglob("*") if path.is_file()}
-        with zipfile.ZipFile("apps/predbat/frontend.zip") as archive:
-            assert archive.testzip() is None
-            actual = {name: archive.read(name) for name in archive.namelist() if not name.endswith("/")}
-        assert "dist/index.html" in actual
-        assert actual == expected, "Checked-in production bundle differs from the current source build"
-        print("Production bundle matches all fresh build files")
-        PY
+        git diff --exit-code -- 'apps/predbat/predbat_ui*'
+        untracked=$(git ls-files --others --exclude-standard -- 'apps/predbat/predbat_ui*')
+        if [ -n "$untracked" ]; then
+          echo "Generated frontend files are missing from Git:"
+          echo "$untracked"
+          exit 1
+        fi

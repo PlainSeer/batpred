@@ -20,7 +20,7 @@ from predbat import PredBat
 from inverter import Inverter, within_fuzzy
 from givtcp_rest import GivTCPRest
 from config import INVERTER_DEF
-from const import MINUTE_WATT, TIME_FORMAT_SECONDS
+from const import INVERTER_MAX_RETRY, MINUTE_WATT, TIME_FORMAT_SECONDS
 
 
 def test_foxess_support_discharge_freeze_matches_foxcloud():
@@ -1077,6 +1077,113 @@ def test_rate_write_quantised(test_name, ha, inv, prev_rate, rate, expect_writes
         print("ERROR: {} expected rate {} got {}".format(test_name, expect_rate, ha.get_state(entity)))
         failed = True
     return failed
+
+
+def test_create_missing_arg_does_not_fill_sibling_entries(test_name, my_predbat):
+    """
+    create_missing_arg() pads every OTHER inverter's slot with None, not the default (#5359 follow-up).
+
+    When the key is entirely missing from args, create_missing_arg() used to fill all four slots
+    with the same default value, and only the caller's own index was then overwritten with its
+    dummy entity. On a mixed fleet where inverter 0 triggers this (e.g. inv_output_charge_control
+    != "power") before inverter 1 is even constructed, inverter 1's slot ended up holding a bare
+    number rather than None - which the per-entry "is this inverter's entry set" check added for
+    #5359 then misreads as a configured entity, since a truthy value is indistinguishable from one.
+
+    The padding applies to every arg create_missing_arg() builds, not just the rates, so every arg
+    that constructing inverter 0 turned into a list is checked.
+    """
+    failed = False
+    print(f"**** Running Test: {test_name} ****")
+
+    saved_args = copy.deepcopy(my_predbat.args)
+    try:
+        my_predbat.args["num_inverters"] = 2
+        # GS (Solis) drives charge rate via current rather than power and has no target SoC, so
+        # constructing inverter 0 takes several create_missing_arg() branches, charge_rate among them
+        my_predbat.args["inverter_type"] = ["GS", "GS"]
+        my_predbat.args.pop("charge_rate", None)
+        my_predbat.args.pop("charge_rate_percent", None)
+        before = {key: value for key, value in my_predbat.args.items() if isinstance(value, list)}
+
+        inv0 = Inverter(my_predbat, 0, quiet=True)
+        if inv0.inv_output_charge_control == "power":
+            print("ERROR: {} test assumes a non-power charge control to exercise create_missing_arg('charge_rate', ...)".format(test_name))
+            return 1
+
+        created = sorted(key for key, value in my_predbat.args.items() if isinstance(value, list) and key not in before)
+        if "charge_rate" not in created:
+            print("ERROR: {} expected charge_rate to be created as a per-inverter list, created {}".format(test_name, created))
+            failed = True
+        for key in created:
+            siblings = my_predbat.args[key][1:]
+            if any(slot is not None for slot in siblings):
+                print("ERROR: {} expected {}'s sibling slots to stay None until those inverters are constructed, got {}".format(test_name, key, siblings))
+                failed = True
+
+        # The consequence: a percent-only inverter 1 beside it must see its own charge_rate entry as unbound,
+        # not take inverter 0's leftover default number for a watts entity and write to it
+        my_predbat.args["inverter_type"] = ["GS", "GEC"]
+        my_predbat.args["charge_rate_percent"] = [None, "number.rate_percent"]
+        inv1 = Inverter(my_predbat, 1, quiet=True)
+        if inv1.rate_controls("charge_rate") != (False, True):
+            print("ERROR: {} expected inverter 1 to use only its percent control, got {}".format(test_name, inv1.rate_controls("charge_rate")))
+            failed = True
+    finally:
+        my_predbat.args.clear()
+        my_predbat.args.update(saved_args)
+
+    return 1 if failed else 0
+
+
+def test_create_missing_arg_keeps_inverter_0_single_value(test_name, my_predbat):
+    """
+    A single (non-list) apps.yaml value is inverter 0's, and must survive another inverter creating its dummy.
+
+    On a mixed fleet where inverter 0 has the control and inverter 1 does not, inverter 1's
+    create_missing_arg() turned the single value into a fresh list and threw it away, so inverter 0
+    lost its own entity: it read the literal default (100%) instead of its real target SoC, and every
+    write to it failed with "not an entity id" (or, padded with None, "No entity_id").
+    """
+    failed = False
+    print(f"**** Running Test: {test_name} ****")
+
+    saved_args = copy.deepcopy(my_predbat.args)
+    saved_apps_yaml = getattr(my_predbat, "args_from_apps_yaml", None)
+    dummy_items = my_predbat.ha_interface.dummy_items
+    saved_entity = dummy_items.get("number.inv0_charge_limit")
+    try:
+        my_predbat.args["num_inverters"] = 2
+        # GE has a target SoC control, GS does not, so only inverter 1 builds a charge_limit dummy
+        my_predbat.args["inverter_type"] = ["GE", "GS"]
+        my_predbat.args["charge_limit"] = "number.inv0_charge_limit"
+        my_predbat.args_from_apps_yaml = copy.deepcopy(my_predbat.args)
+        dummy_items["number.inv0_charge_limit"] = 55
+
+        inv0 = Inverter(my_predbat, 0, quiet=True)
+        Inverter(my_predbat, 1, quiet=True)
+
+        expected = ["number.inv0_charge_limit", "sensor.{}_GS_1_charge_limit".format(my_predbat.prefix), None, None]
+        if my_predbat.args["charge_limit"] != expected:
+            print("ERROR: {} expected charge_limit {} got {}".format(test_name, expected, my_predbat.args["charge_limit"]))
+            failed = True
+        current = my_predbat.get_arg("charge_limit", index=0, default=100.0)
+        if current != 55:
+            print("ERROR: {} expected inverter 0 to read its own charge limit 55 got {}".format(test_name, current))
+            failed = True
+        if inv0.user_configured_entity("charge_limit") != "number.inv0_charge_limit":
+            print("ERROR: {} expected inverter 0's apps.yaml entity to still count as configured, got {}".format(test_name, inv0.user_configured_entity("charge_limit")))
+            failed = True
+    finally:
+        my_predbat.args.clear()
+        my_predbat.args.update(saved_args)
+        my_predbat.args_from_apps_yaml = saved_apps_yaml
+        if saved_entity is None:
+            dummy_items.pop("number.inv0_charge_limit", None)
+        else:
+            dummy_items["number.inv0_charge_limit"] = saved_entity
+
+    return 1 if failed else 0
 
 
 def test_custom_inverter_def_drops_rate_step(test_name, my_predbat, ha):
@@ -3699,6 +3806,73 @@ def test_button_press_and_poll_counts_as_register_write(test_name, ha, inv):
     return failed
 
 
+def test_button_press_and_poll_clock_skew(test_name, ha, inv):
+    """
+    Regression test for issue #5694: _press_single_button_and_poll compared the press time with
+    timedelta.seconds, which is never negative, so a last_updated a few seconds ahead of Predbat's
+    clock read as ~86395s stale (pressed 10 times, then reported failed) and one a whole number of
+    days plus a few seconds old read as fresh.
+    """
+    failed = False
+    print("Test: {}".format(test_name))
+
+    entity_id = "button.charge_discharge_update"
+    unset = object()
+    saved_item = ha.dummy_items.get(entity_id, unset)
+    saved_sleep = inv.sleep
+    saved_call_service = inv.base.call_service_wrapper
+    had_record_status = "record_status" in inv.base.__dict__
+    saved_record_status = inv.base.record_status
+    presses = []
+    before_writes = inv.count_register_writes
+    try:
+        inv.sleep = lambda seconds: None
+        inv.base.record_status = lambda *args, **kwargs: None
+
+        def counting_call_service(service, **kwargs):
+            """Count button presses, then pass through to the mock HA."""
+            if service == "button/press":
+                presses.append(kwargs.get("entity_id"))
+            return saved_call_service(service, **kwargs)
+
+        inv.base.call_service_wrapper = counting_call_service
+        local_tz = pytz.timezone(inv.base.get_arg("timezone", "Europe/London"))
+
+        for label, offset, expect_ok in [
+            ("5s ahead of the clock", timedelta(seconds=5), True),
+            ("3 days and 5s old", -timedelta(days=3, seconds=5), False),
+        ]:
+            presses.clear()
+            inv.count_register_writes = before_writes
+            ha.dummy_items[entity_id] = (datetime.now(local_tz) + offset).strftime(TIME_FORMAT_SECONDS)
+            result = inv._press_single_button_and_poll(entity_id)
+            if result != expect_ok:
+                print(f"ERROR: {test_name}: press with last_updated {label} should return {expect_ok}, got {result}")
+                failed = True
+            expected_presses = 1 if expect_ok else INVERTER_MAX_RETRY
+            if len(presses) != expected_presses:
+                print(f"ERROR: {test_name}: press with last_updated {label} should press {expected_presses} time(s), pressed {len(presses)}")
+                failed = True
+            expected_writes = before_writes + (1 if expect_ok else 0)
+            if inv.count_register_writes != expected_writes:
+                print(f"ERROR: {test_name}: press with last_updated {label} should leave count_register_writes {expected_writes}, got {inv.count_register_writes}")
+                failed = True
+    finally:
+        inv.sleep = saved_sleep
+        inv.base.call_service_wrapper = saved_call_service
+        if had_record_status:
+            inv.base.record_status = saved_record_status
+        else:
+            del inv.base.record_status
+        if saved_item is unset:
+            ha.dummy_items.pop(entity_id, None)
+        else:
+            ha.dummy_items[entity_id] = saved_item
+        inv.count_register_writes = before_writes
+
+    return failed
+
+
 def test_force_export_stable_window_presses_button_once(test_name, ha, inv):
     """
     Regression test for issue #4709: a stable export window must commit to the inverter once, not on
@@ -6270,6 +6444,8 @@ charge_start_service:
     failed |= test_export_window_no_source_configured_raises("export_window_no_source_configured_raises", my_predbat, dummy_items)
     failed |= test_window_warning_names_components_when_type_unset("window_warning_names_components_when_type_unset", my_predbat, dummy_items)
     failed |= test_short_per_inverter_list_gets_its_dummy_entity("short_per_inverter_list_gets_its_dummy_entity", my_predbat)
+    failed |= test_create_missing_arg_does_not_fill_sibling_entries("create_missing_arg_does_not_fill_sibling_entries", my_predbat)
+    failed |= test_create_missing_arg_keeps_inverter_0_single_value("create_missing_arg_keeps_inverter_0_single_value", my_predbat)
     if failed:
         return failed
 
@@ -6329,6 +6505,7 @@ charge_start_service:
     failed |= test_export_commit_guard_latches_across_fetches("export_commit_guard_latches_across_fetches", my_predbat)
     failed |= test_button_press_counts_as_register_write("button_press_counts_as_register_write", ha, inv)
     failed |= test_button_press_and_poll_counts_as_register_write("button_press_and_poll_counts_as_register_write", ha, inv)
+    failed |= test_button_press_and_poll_clock_skew("button_press_and_poll_clock_skew", ha, inv)
     if failed:
         return failed
 
