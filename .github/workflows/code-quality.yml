@@ -4,7 +4,7 @@ on:
   push:
     branches:
     - main
-    - 'review/predbat-v9.5.0-modern-ui-20261025'
+    - 'review/predbat-v9.5.1-modern-ui-20261025'
 jobs:
   pre-commit:
     runs-on: ubuntu-latest
