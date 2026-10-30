@@ -760,6 +760,8 @@ def run_iog_model_limit_fetch_test(testname, my_predbat):
         "octopus_intelligent_charging",
         "octopus_intelligent_ignore_unplugged",
         "octopus_intelligent_consider_full",
+        "octopus_charge_target_base",
+        "octopus_charge_target_logged",
         "octopus_slots",
         "now_utc",
         "midnight_utc",
@@ -858,11 +860,12 @@ def run_iog_model_limit_fetch_test(testname, my_predbat):
 
     # A charger requesting +30% must not mark a car at 50% as already full (#3034).
     slot_entity = "binary_sensor.octopus_energy_intelligent_dispatching_car_a"
-    for is_charger, override, expected in [(True, None, 80.0), (False, None, 30.0), (False, True, 80.0), (True, False, 30.0)]:
+    for is_charger, override, soc, expected in [(True, None, 50.0, 80.0), (False, None, 50.0, 30.0), (False, True, 50.0, 80.0), (True, False, 50.0, 30.0), (False, True, 20.0, 80.0)]:
         attributes = {key: value for key, value in my_predbat.ha_interface.get_state(slot_entity, raw=True).items() if key != "state"}
         attributes["is_charger"] = is_charger
         my_predbat.ha_interface.set_state(slot_entity, "on", attributes=attributes)
         my_predbat.args["octopus_charge_limit"] = [30.0, 30.0]
+        my_predbat.args["car_charging_soc"] = [soc, 50.0]
         if override is None:
             my_predbat.args.pop("octopus_charge_limit_is_additive", None)
         else:
