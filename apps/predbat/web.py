@@ -2595,7 +2595,7 @@ var options = {
         # and it picks up the page's own heading style. The wrapper div keeps it on its own line, as h2 is inline here.
         # The title goes in via a JSON string and textContent, so a friendly name with a quote or markup in it is safe.
         chart_title_js = json.dumps(str(chart_name)).replace("<", "\\u003c")
-        text += "(function() {\n"
+        text += ";(function() {\n"
         text += "  var container = document.getElementById('{}');\n".format(tagname)
         text += "  var heading = document.createElement('h2');\n"
         text += "  heading.textContent = {};\n".format(chart_title_js)
