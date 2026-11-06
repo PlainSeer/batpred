@@ -20,7 +20,10 @@ function cssColour(styles: CSSStyleDeclaration, name: string, fallback: string):
 }
 
 /** Display the live battery and power charts plus today's cumulative energy totals. */
-export default function MetricsCharts({ metrics }: { metrics: DashboardMetrics }) {
+export default function MetricsCharts({ metrics, socBoundaries }: { metrics: DashboardMetrics; socBoundaries: { low: number; medium: number } }) {
+  const socPercent = Math.min(100, Math.max(0, metrics.battery_soc_percent || 0))
+  const powerValues = metricPowerValues(metrics)
+  const energyValues = metricEnergyValues(metrics)
   const socRef = useRef<HTMLCanvasElement>(null)
   const powerRef = useRef<HTMLCanvasElement>(null)
   const energyRef = useRef<HTMLCanvasElement>(null)
@@ -43,15 +46,12 @@ export default function MetricsCharts({ metrics }: { metrics: DashboardMetrics }
       solar: cssColour(styles, '--color-flow-solar', '#f59e0b'),
       import: cssColour(styles, '--color-danger', '#dc2626'),
       export: cssColour(styles, '--color-export', '#7c3aed'),
-      battery: cssColour(styles, '--color-battery-high', '#22c55e'),
+      battery: cssColour(styles, `--color-battery-${metrics.battery_soc_percent <= socBoundaries.low ? 'low' : metrics.battery_soc_percent <= socBoundaries.medium ? 'medium' : 'high'}`, '#22c55e'),
       track: cssColour(styles, '--color-battery-track', '#e5e7eb'),
       border: cssColour(styles, '--color-border', '#e5e7eb'),
       text: cssColour(styles, '--color-text', '#111827'),
       muted: cssColour(styles, '--color-text-muted', '#6b7280')
     }
-    const socPercent = Math.min(100, Math.max(0, metrics.battery_soc_percent || 0))
-    const powerValues = metricPowerValues(metrics)
-    const energyValues = metricEnergyValues(metrics)
     const barColours = [colours.charge, colours.discharge, colours.load, colours.solar, colours.import, colours.export]
     const energyColours = [colours.load, colours.solar, colours.import, colours.export]
 
@@ -153,7 +153,7 @@ export default function MetricsCharts({ metrics }: { metrics: DashboardMetrics }
       powerChart.destroy()
       energyChart.destroy()
     }
-  }, [metrics, themeRevision])
+  }, [metrics, themeRevision, socBoundaries])
 
   return (
     <>
@@ -162,11 +162,11 @@ export default function MetricsCharts({ metrics }: { metrics: DashboardMetrics }
         <div className="metrics-chart-grid">
           <div className="metrics-chart-card metrics-chart-card-soc">
             <h4>State of charge</h4>
-            <div className="metrics-chart-canvas"><canvas ref={socRef} role="img" aria-label="Battery state of charge" /></div>
+            <div className="metrics-chart-canvas"><canvas ref={socRef} role="img" aria-label={`Battery state of charge: ${socPercent.toFixed(0)}%, ${metrics.battery_soc_kwh.toFixed(1)} of ${metrics.battery_max_kwh.toFixed(1)} kWh`} /></div>
           </div>
           <div className="metrics-chart-card">
             <h4>Live power</h4>
-            <div className="metrics-chart-canvas"><canvas ref={powerRef} role="img" aria-label="Live battery, home, solar and grid power" /></div>
+            <div className="metrics-chart-canvas"><canvas ref={powerRef} role="img" aria-label={`Live power: battery charge ${powerValues[0].toFixed(2)} kW, battery discharge ${powerValues[1].toFixed(2)} kW, load ${powerValues[2].toFixed(2)} kW, solar ${powerValues[3].toFixed(2)} kW, grid import ${powerValues[4].toFixed(2)} kW, grid export ${powerValues[5].toFixed(2)} kW`} /></div>
           </div>
         </div>
       </div>
@@ -175,7 +175,7 @@ export default function MetricsCharts({ metrics }: { metrics: DashboardMetrics }
         <h3>Energy today</h3>
         <p className="metrics-section-description">Running totals since midnight.</p>
         <div className="metrics-chart-card">
-          <div className="metrics-chart-canvas metrics-chart-canvas-energy"><canvas ref={energyRef} role="img" aria-label="Energy totals for today" /></div>
+          <div className="metrics-chart-canvas metrics-chart-canvas-energy"><canvas ref={energyRef} role="img" aria-label={`Energy today: load ${energyValues[0].toFixed(1)} kWh, solar ${energyValues[1].toFixed(1)} kWh, grid import ${energyValues[2].toFixed(1)} kWh, grid export ${energyValues[3].toFixed(1)} kWh`} /></div>
         </div>
       </div>
     </>

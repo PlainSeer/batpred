@@ -42,6 +42,8 @@ def test_load_ml(my_predbat=None):
         ("load_to_energy", _test_load_to_energy, "Convert cumulative load to energy per step"),
         ("pv_energy_conversion", _test_pv_energy_conversion, "Convert PV data including future forecasts"),
         ("dataset_creation", _test_dataset_creation, "Dataset creation from load data"),
+        ("dataset_independent_holdout", _test_dataset_independent_holdout, "Validation data cannot enter training or normalisation"),
+        ("dataset_sparse_holdout", _test_dataset_sparse_holdout, "Sparse history preserves the chronological validation boundary"),
         ("dataset_with_pv", _test_dataset_with_pv, "Dataset creation with PV features"),
         ("dataset_with_temp", _test_dataset_with_temp, "Dataset creation with temperature features"),
         ("normalization", _test_normalization, "Z-score normalization correctness"),
@@ -51,6 +53,7 @@ def test_load_ml(my_predbat=None):
         ("training_with_pv", _test_training_with_pv, "Training with PV input features"),
         ("training_with_temp", _test_training_with_temp, "Training with temperature input features"),
         ("model_persistence", _test_model_persistence, "Model save/load with version check"),
+        ("model_validation_version", _test_model_validation_version, "Weights trained on the old overlapping validation data are rejected"),
         ("cold_start", _test_cold_start, "Cold start with insufficient data"),
         ("fine_tune", _test_fine_tune, "Fine-tune on recent data"),
         ("curriculum_training", _test_curriculum_training, "Curriculum training with progressive window expansion"),
@@ -443,6 +446,55 @@ def _test_dataset_creation():
     assert abs(X_val.shape[0] - expected_val_samples) < 5, f"Expected ~{expected_val_samples} val samples, got {X_val.shape[0]}"
 
 
+def _test_dataset_independent_holdout():
+    """Changing held-out observations must not change training rows, targets or fitted statistics."""
+    from load_predictor import BATCH_SIZE
+
+    for holdout_hours in (24, 48):
+        for minute in (0, 7):
+            now_utc = datetime(2026, 11, 6, 12, minute, tzinfo=timezone.utc)
+            original = {m: 0.04 for m in range(0, 7 * 24 * 60, STEP_MINUTES)}
+            predictor = LoadPredictor(log_func=lambda *args: None)
+            _, alignment = predictor._chunk_energy_to_aligned(original, now_utc)
+            boundary = holdout_hours * 60 // CHUNK_MINUTES
+            changed = {m: (0.8 if alignment <= m < alignment + holdout_hours * 60 else value) for m, value in original.items()}
+            for is_finetune in (False, True):
+                train, targets, weights, val, val_targets = predictor._create_dataset(original, now_utc, is_finetune=is_finetune, validation_holdout_hours=holdout_hours)
+                changed_train, changed_targets, changed_weights, changed_val, changed_val_targets = predictor._create_dataset(changed, now_utc, is_finetune=is_finetune, validation_holdout_hours=holdout_hours)
+                assert len(train) >= BATCH_SIZE
+                assert np.min(train.targets) >= boundary, "Validation targets leaked into training"
+                assert np.array_equal(train.targets, changed_train.targets)
+                assert np.array_equal(np.asarray(train), np.asarray(changed_train)), "Holdout changed training features"
+                assert np.array_equal(targets, changed_targets), "Holdout changed training labels"
+                assert np.array_equal(weights, changed_weights)
+                assert len(val) == boundary and len(changed_val) == boundary
+                assert not np.array_equal(val_targets, changed_val_targets), "Test must change validation labels"
+                predictor._fit_windowed_normalisation(train)
+                mean, std = predictor.feature_mean.copy(), predictor.feature_std.copy()
+                predictor._fit_windowed_normalisation(changed_train)
+                assert np.array_equal(mean, predictor.feature_mean), "Holdout changed fitted feature means"
+                assert np.array_equal(std, predictor.feature_std), "Holdout changed fitted feature deviations"
+
+
+def _test_dataset_sparse_holdout():
+    """Missing samples must not shift the holdout boundary into the training period."""
+    from load_predictor import BATCH_SIZE
+
+    now_utc = datetime(2026, 11, 6, 12, 0, tzinfo=timezone.utc)
+    load = {m: 0.04 for m in range(0, 7 * 24 * 60, STEP_MINUTES) if m != 60}
+    predictor = LoadPredictor(log_func=lambda *args: None)
+    train, targets, weights, val, val_targets = predictor._create_dataset(load, now_utc, validation_holdout_hours=48)
+    assert np.min(train.targets) == 48 * 60 // CHUNK_MINUTES
+    assert len(train) == len(targets) == len(weights)
+    # The gap removes its own target and the newer targets whose lookback contains it.
+    assert len(val) == len(val_targets) == 48 * 60 // CHUNK_MINUTES - (60 // CHUNK_MINUTES + 1)
+    short = {m: 0.04 for m in range(0, 3 * 24 * 60 + 60, STEP_MINUTES)}
+    short_train = predictor._create_dataset(short, now_utc, validation_holdout_hours=48)[0]
+    assert short_train is None or len(short_train) < BATCH_SIZE, "Short history must not borrow validation samples"
+    assert predictor.train(short, now_utc, epochs=1, validation_holdout_hours=48) is None
+    assert not predictor.model_initialized, "Insufficient data must not initialise a model"
+
+
 def _test_dataset_with_pv():
     """Test dataset creation includes PV features correctly"""
     predictor = LoadPredictor()
@@ -778,6 +830,30 @@ def _test_model_persistence():
     finally:
         if os.path.exists(temp_path):
             os.unlink(temp_path)
+
+
+def _test_model_validation_version():
+    """Reject version 10 weights without changing the history database format."""
+    import json
+    from load_predictor import MODEL_VERSION
+
+    assert MODEL_VERSION == 11
+    predictor = LoadPredictor(log_func=lambda *args: None)
+    predictor._initialize_weights()
+    predictor.validation_mae = 0.01
+    with tempfile.TemporaryDirectory() as directory:
+        path = os.path.join(directory, "model.npz")
+        assert predictor.save(path)
+        assert LoadPredictor(log_func=lambda *args: None).load(path), "Corrected models must remain loadable"
+        with np.load(path, allow_pickle=False) as saved:
+            arrays = {key: saved[key].copy() for key in saved.files}
+        metadata = json.loads(str(arrays["metadata_json"]))
+        metadata["model_version"] = 10
+        arrays["metadata_json"] = json.dumps(metadata)
+        np.savez_compressed(path, **arrays)
+        old_model = LoadPredictor(log_func=lambda *args: None)
+        assert not old_model.load(path), "Old in-sample weights must be retrained"
+        assert not old_model.model_initialized
 
 
 def _test_cold_start():
@@ -2817,6 +2893,23 @@ def _test_component_publish_entity():
     assert call["attributes"]["results"] == {}, "results should be empty dict"
 
     print("    PASS: Empty predictions handled correctly")
+
+    # Test 3: the predictor hands back numpy values, and round() keeps them numpy. They must be published as plain
+    # floats, as a numpy scalar in an entity attribute reaches the debug yaml as a pickled object.
+    # Mutation check: dropping the float() conversions in _publish_entity fails this.
+    mock_base.dashboard_calls = []
+    component.load_minutes_now = np.float64(10.5)
+    component.current_predictions = {0: np.float64(0.1), 5: np.float64(0.2), 60: np.float64(1.3), 480: np.float32(9.7), 1440: np.float64(28.9)}
+    component._publish_entity()
+
+    published = list(mock_base.dashboard_calls[0]["attributes"]["results"].values()) + [mock_base.dashboard_calls[1]["state"]]
+    stats = mock_base.dashboard_calls[1]["attributes"]
+    published += [stats[key] for key in ("load_today", "load_today_h1", "load_today_h8", "load_total", "power_today_now", "power_today_h1", "power_today_h8")]
+    leaked = [value for value in published if type(value) is not float]
+    assert not leaked, f"Expected every published value to be a plain float, got {[type(value).__name__ for value in leaked]}"
+    assert abs(stats["load_today_h1"] - 11.8) < 0.01, f"Expected load_today_h1 11.8 from numpy predictions, got {stats['load_today_h1']}"
+
+    print("    PASS: numpy predictions published as plain floats")
 
     print("  All _publish_entity tests passed!")
 

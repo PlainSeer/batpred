@@ -25,7 +25,7 @@ type ConfigItem = {
 }
 
 /** Edit the live Home Assistant controls generated from Predbat configuration. */
-export default function ConfigPage() {
+export default function ConfigPage({ onUpdatePendingChange }: { onUpdatePendingChange: (pending: boolean) => void }) {
   const [items, setItems] = useState<ConfigItem[]>([])
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
@@ -38,6 +38,10 @@ export default function ConfigPage() {
   const [tariffMessage, setTariffMessage] = useState('')
 
   const load = useCallback(async () => {
+    setLoading(true)
+    setError('')
+    setTariff(null)
+    setTariffError('')
     try {
       const response = await fetch('../api/config', { cache: 'no-store' })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
@@ -60,6 +64,7 @@ export default function ConfigPage() {
       }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to load configuration')
+      setTariffError('Tariff analysis is unavailable because configuration could not be loaded. Use Refresh to try again.')
     } finally {
       setLoading(false)
     }
@@ -80,6 +85,7 @@ export default function ConfigPage() {
   async function save(item: ConfigItem, value: string | number | boolean) {
     setSaving(item.entity)
     setError('')
+    if (item.name === 'update') onUpdatePendingChange(true)
     try {
       await postChanges([{ item, value }])
       setItems((current) => current.map((entry) => entry.entity === item.entity ? { ...entry, value } : entry))
@@ -87,6 +93,7 @@ export default function ConfigPage() {
       setError(reason instanceof Error ? reason.message : 'Unable to save configuration')
     } finally {
       setSaving('')
+      if (item.name === 'update') onUpdatePendingChange(false)
     }
   }
 
@@ -188,21 +195,21 @@ export default function ConfigPage() {
                 const disabled = saving === item.entity || saving === 'tariff-helper'
                 return (
                   <tr key={item.entity} className={validationErrors[item.name] ? 'has-error' : ''}>
-                    <td><div className="config-setting-name"><strong>{item.friendly_name}</strong><span className="config-help" tabIndex={0} aria-label={item.description} data-tooltip={item.description}><FontAwesomeIcon icon={faCircleInfo} /></span></div><small>{item.entity}</small>{validationErrors[item.name] && <span className="config-item-error">{validationErrors[item.name]}</span>}</td>
-                    <td className={changed ? 'is-changed' : ''}>{String(item.value)} {item.unit}</td>
-                    <td>{String(item.default)} {item.unit}</td>
+                    <td><div className="config-setting-name"><strong>{item.friendly_name}</strong><span className="config-help" tabIndex={0} aria-label={item.description} data-tooltip={item.description}><FontAwesomeIcon icon={faCircleInfo} /></span></div><small>{item.entity}</small>{validationErrors[item.name] && <span id={`config-error-${item.name}`} className="config-item-error">{validationErrors[item.name]}</span>}</td>
+                    <td className={changed ? 'is-changed' : ''}><span className="config-mobile-label">Current: </span>{String(item.value)} {item.unit}</td>
+                    <td><span className="config-mobile-label">Default: </span>{String(item.default)} {item.unit}</td>
                     <td>
                       {item.type === 'switch' ? (
                         <label className="config-switch">
-                          <input type="checkbox" checked={Boolean(item.value)} disabled={disabled} onChange={(event) => save(item, event.target.checked)} />
-                          <i aria-hidden="true" /><span>{item.value ? 'On' : 'Off'}</span>
+                          <input type="checkbox" aria-label={item.friendly_name} aria-invalid={Boolean(validationErrors[item.name])} aria-describedby={validationErrors[item.name] ? `config-error-${item.name}` : undefined} checked={Boolean(item.value)} disabled={disabled} onChange={(event) => save(item, event.target.checked)} />
+                          <i aria-hidden="true" /><span>{String(Boolean(item.value))}</span>
                         </label>
                       ) : item.type === 'select' ? (
-                        <select name={item.name} aria-label={item.friendly_name} autoComplete="off" value={String(item.value)} disabled={disabled} onChange={(event) => save(item, event.target.value)}>
+                        <select name={item.name} aria-label={item.friendly_name} aria-invalid={Boolean(validationErrors[item.name])} aria-describedby={validationErrors[item.name] ? `config-error-${item.name}` : undefined} autoComplete="off" value={String(item.value)} disabled={disabled} onChange={(event) => save(item, event.target.value)}>
                           {item.options.map((option) => <option key={String(option)} value={String(option)}>{String(option) || 'None'}</option>)}
                         </select>
                       ) : item.type === 'input_number' || item.type === 'number' ? (
-                        <input type="number" name={item.name} aria-label={item.friendly_name} autoComplete="off" defaultValue={Number(item.value)} min={item.min ?? undefined} max={item.max ?? undefined} step={item.step ?? undefined} disabled={disabled} onBlur={(event) => Number(event.target.value) !== Number(item.value) && save(item, Number(event.target.value))} />
+                        <input type="number" name={item.name} aria-label={item.friendly_name} aria-invalid={Boolean(validationErrors[item.name])} aria-describedby={validationErrors[item.name] ? `config-error-${item.name}` : undefined} autoComplete="off" defaultValue={Number(item.value)} min={item.min ?? undefined} max={item.max ?? undefined} step={item.step ?? undefined} disabled={disabled} onBlur={(event) => Number(event.target.value) !== Number(item.value) && save(item, Number(event.target.value))} />
                       ) : <span>{String(item.value)}</span>}
                     </td>
                   </tr>
@@ -211,7 +218,7 @@ export default function ConfigPage() {
               </tbody>
             </table></div>
           </section>)}
-          {!visibleItems.length && <div className="config-empty">No settings match that filter.</div>}
+          {!visibleItems.length && !error && <div className="config-empty">{items.length ? 'No settings match that filter.' : 'No configuration settings are available.'}</div>}
         </div>
       )}
     </section>

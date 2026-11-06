@@ -32,8 +32,21 @@
     linear-gradient(145deg, #18212a 0%, #2b3641 48%, #111820 100%);
 }
 
+:root[data-preset='retro'][data-theme='dark'] .overview-page {
+  background: transparent;
+}
+
+:root[data-preset='retro'][data-theme='light'] .overview-page {
+  background: transparent;
+  color: var(--color-text);
+}
+
 .overview-page.is-night .overview-page-header p {
   color: #cbd5e1;
+}
+
+:root[data-preset='retro'][data-theme='light'] .overview-page.is-night .overview-page-header p {
+  color: var(--color-text-secondary);
 }
 
 .overview-page-header {
@@ -83,6 +96,11 @@
   background: rgb(15 23 42 / 45%);
 }
 
+:root[data-preset='retro'][data-theme='light'] .overview-page.is-night .overview-weather-toggle {
+  border-color: rgb(100 116 139 / 28%);
+  background: rgb(255 255 255 / 55%);
+}
+
 .overview-weather-toggle-track {
   position: relative;
   width: 2rem;
@@ -117,7 +135,7 @@
 }
 
 .overview-weather-toggle:focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -211,24 +229,27 @@
   padding: 1rem;
   border: 1px solid rgb(255 255 255 / 92%);
   border-radius: 0.8rem;
-  background: rgb(255 255 255 / 78%);
+  background: var(--color-surface);
   box-shadow: 0 8px 28px rgb(34 46 58 / 12%);
   backdrop-filter: blur(14px);
 }
 
 .overview-updated {
-  position: absolute;
-  right: clamp(0.75rem, 1.5vw, 1.5rem);
-  bottom: 0.75rem;
+  display: block;
+  align-self: flex-end;
+  margin-top: 0.75rem;
   color: var(--color-text-muted);
-  font-size: 0.65rem;
+  font-size: 0.75rem;
   line-height: 1.4;
   text-align: right;
+  padding: 0.2rem 0.4rem;
+  border-radius: 4px;
+  background: var(--color-surface);
 }
 
 [data-theme='dark'] .overview-card {
   border-color: rgb(255 255 255 / 52%);
-  background: rgb(24 30 37 / 78%);
+  background: var(--color-surface);
   box-shadow: 0 10px 30px rgb(0 0 0 / 24%);
 }
 
@@ -374,8 +395,13 @@
   z-index: auto;
   align-self: center;
   justify-self: center;
-  width: 100%;
+  /* Match the image and overlays' 5:4 coordinates while limiting both axes. */
+  width: min(100%, calc((100vh - 8rem) * 1.25));
+  width: min(100%, calc((100dvh - 8rem) * 1.25));
   min-width: 0;
+  min-height: 0;
+  flex: none;
+  aspect-ratio: 5 / 4;
   margin: 0;
 }
 
@@ -716,7 +742,7 @@
 .overview-battery-soc {
   display: grid;
   gap: 0.35rem;
-  color: var(--color-success);
+  color: var(--color-success-text);
 }
 
 .overview-battery-track {
@@ -749,24 +775,19 @@
   animation: overview-battery-charge-fill 1.8s ease-in-out infinite;
 }
 
-.overview-battery-icon.is-charging,
-.overview-battery-soc.is-charging {
-  color: var(--color-charge);
-}
-
 .overview-battery-icon.is-low,
 .overview-battery-soc.is-low {
-  color: var(--color-danger);
+  color: var(--color-battery-low);
 }
 
 .overview-battery-icon.is-medium,
 .overview-battery-soc.is-medium {
-  color: var(--color-warning);
+  color: var(--color-battery-medium);
 }
 
 .overview-battery-icon.is-healthy,
 .overview-battery-soc.is-healthy {
-  color: var(--color-success);
+  color: var(--color-battery-high);
 }
 
 .overview-card-solar .overview-card-icon {
@@ -779,7 +800,7 @@
 
 .overview-card-grid .overview-card-main-subvalue,
 .overview-card-grid .overview-detail-subvalue {
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   line-height: 1.1;
 }
 
@@ -798,15 +819,15 @@
 }
 
 .is-solar {
-  color: var(--color-flow-solar);
+  color: var(--color-solar-text);
 }
 
 .is-charge {
-  color: var(--color-charge);
+  color: var(--color-charge-text);
 }
 
 .is-export {
-  color: var(--color-export);
+  color: var(--color-export-text);
 }
 
 .is-import {
@@ -819,7 +840,7 @@
 
 .is-home,
 .is-demand {
-  color: var(--color-flow-home);
+  color: var(--color-success-text);
 }
 
 @keyframes overview-flow {
@@ -831,18 +852,20 @@
 
 @media (min-width: 901px) {
   .app-content > main:has(> .overview-page) {
-    height: 100dvh;
+    height: calc(100vh - 52px);
+    height: calc(100dvh - 52px);
     min-height: 0;
   }
 
   .app-shell.navigation-horizontal .app-content > main:has(> .overview-page) {
+    height: calc(100vh - 56px);
     height: calc(100dvh - 56px);
   }
 
   .overview-page {
     display: flex;
     flex-direction: column;
-    height: 100%;
+    flex: 1;
     min-height: 0;
     overflow: hidden;
   }
@@ -850,11 +873,17 @@
   .overview-stage {
     flex: 1;
     min-height: 0;
+    grid-template-rows: minmax(0, 1fr);
     container-type: size;
   }
 
+  .overview-column {
+    overflow-y: auto;
+  }
+
   .overview-scene {
-    width: min(100%, 125cqh);
+    width: min(100%, calc((100vh - 8rem) * 1.25));
+    width: min(100%, calc((100dvh - 8rem) * 1.25), 125cqh);
     max-width: 100%;
     height: auto;
     max-height: 100%;
@@ -865,6 +894,13 @@
   .overview-scene > img {
     width: 100%;
     height: auto;
+  }
+}
+
+@media (min-width: 1080px) {
+  .app-content > main:has(> .overview-page) {
+    height: 100vh;
+    height: 100dvh;
   }
 }
 
@@ -902,7 +938,7 @@
 
 @media (max-width: 1180px) {
   .overview-stage {
-    grid-template-columns: minmax(13.5rem, 15rem) minmax(20rem, 1fr) minmax(13.5rem, 15rem);
+    grid-template-columns: minmax(13.5rem, 15rem) minmax(0, 1fr) minmax(13.5rem, 15rem);
     gap: 0.75rem;
     padding: 0;
   }
@@ -971,7 +1007,8 @@
 
   .overview-scene {
     order: 2;
-    width: min(100%, 42rem);
+    width: min(100%, 42rem, calc((100vh - 8rem) * 1.25));
+    width: min(100%, 42rem, calc((100dvh - 8rem) * 1.25));
   }
 
   .overview-column-right {
@@ -1092,4 +1129,8 @@
   .overview-battery-soc.is-charging .overview-battery-track span::after {
     animation: none;
   }
+}
+
+@media (pointer: coarse) {
+  .overview-weather-toggle { min-height: 44px; }
 }

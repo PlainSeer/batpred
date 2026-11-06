@@ -55,6 +55,7 @@ type OverviewPageProps = {
   plan: Plan
   powerFlow: PowerFlowData
   updatedAt: number | null
+  socBoundaries: { low: number; medium: number }
 }
 
 type CardConnectorName = 'grid' | 'solar' | 'home' | 'battery' | 'car' | 'heatPump'
@@ -183,10 +184,9 @@ function getBatteryIcon(socPercent: number): IconDefinition {
   return faBatteryEmpty
 }
 
-function batterySocTone(socPercent: number, charging: boolean): string {
-  if (charging) return 'is-charging'
-  if (socPercent <= 20) return 'is-low'
-  if (socPercent <= 40) return 'is-medium'
+function batterySocTone(socPercent: number, boundaries: { low: number; medium: number }): string {
+  if (socPercent <= boundaries.low) return 'is-low'
+  if (socPercent <= boundaries.medium) return 'is-medium'
   return 'is-healthy'
 }
 
@@ -263,7 +263,7 @@ function CloudComposite() {
       <span className="overview-cloud-layer is-back" />
       <span className="overview-cloud-layer is-middle" />
       <span className="overview-cloud-layer is-front" />
-      <svg className="overview-cloud-filter-definitions" width="0" height="0" focusable="false">
+      <svg className="overview-cloud-filter-definitions" width="0" height="0" focusable="false" aria-hidden="true">
         <defs>
           <filter id="overview-cloud-filter-back" x="-50%" y="-80%" width="200%" height="260%">
             <feTurbulence type="fractalNoise" baseFrequency="0.012" numOctaves="3" seed="11" result="noise" />
@@ -306,7 +306,7 @@ function Detail({ label, value, tone = '', subvalue }: { label: string; value: s
   )
 }
 
-export default function OverviewPage({ plan, powerFlow, updatedAt }: OverviewPageProps) {
+export default function OverviewPage({ plan, powerFlow, updatedAt, socBoundaries }: OverviewPageProps) {
   const stageRef = useRef<HTMLElement>(null)
   const sceneImageRef = useRef<HTMLImageElement>(null)
   const [connectorGeometry, setConnectorGeometry] = useState<Partial<Record<CardConnectorName, CardConnectorGeometry>>>({})
@@ -325,7 +325,7 @@ export default function OverviewPage({ plan, powerFlow, updatedAt }: OverviewPag
   const batteryState = powerFlow.battery_charging ? 'Charging' : powerFlow.battery_discharging ? 'Discharging' : 'Idle'
   const batteryStateTone = powerFlow.battery_charging ? 'is-charge' : 'is-muted'
   const batteryIcon = getBatteryIcon(powerFlow.soc_percent)
-  const batteryTone = batterySocTone(powerFlow.soc_percent, powerFlow.battery_charging)
+  const batteryTone = batterySocTone(powerFlow.soc_percent, socBoundaries)
   const gridTone = gridExporting ? 'is-export' : ''
   const heatPumpStatus = powerFlow.ashp?.status?.trim().toLowerCase()
   const heatPumpRunning = Boolean(heatPumpStatus && heatPumpStatus !== 'off')
@@ -505,7 +505,7 @@ export default function OverviewPage({ plan, powerFlow, updatedAt }: OverviewPag
 
           <OverviewCard className="overview-card-home" connector="home" icon={faHouse} title="Home" main={formatPower(powerFlow.house_power)} mainTone={getOverviewPowerTone(powerFlow.house_power, 'is-home')}>
             <Detail label="Used today" value={formatEnergy(powerFlow.totals.load_today)} />
-            <Detail label="Predbat Status" value={actions.current.label} tone={actionTone(actions.current.label)} subvalue={currentActionDetail} />
+            <Detail label="Planned action" value={actions.current.label} tone={actionTone(actions.current.label)} subvalue={currentActionDetail} />
             <Detail label="Next Action" value={actions.next.label} tone={actionTone(actions.next.label)} subvalue={nextActionDetail} />
           </OverviewCard>
 
@@ -572,7 +572,7 @@ export default function OverviewPage({ plan, powerFlow, updatedAt }: OverviewPag
             title="Battery"
             main={`${powerFlow.soc_percent.toFixed(0)}%`}
           >
-            <div className={`overview-battery-soc ${batteryTone}`}>
+            <div className={`overview-battery-soc ${batteryTone} ${powerFlow.battery_charging ? 'is-charging' : ''}`}>
               <div className="overview-battery-track" aria-label={`Battery ${powerFlow.soc_percent.toFixed(0)}% full`}>
                 <span style={{ width: `${Math.min(100, Math.max(0, powerFlow.soc_percent))}%` }} />
               </div>

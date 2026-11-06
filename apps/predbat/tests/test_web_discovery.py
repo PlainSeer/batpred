@@ -87,9 +87,9 @@ class _StubCoordinator:
         return self._catalogue
 
 
-# One import meter whose MPAN must never appear on the redacted page, and one inverter carrying a
-# serial, a model and an entity descriptor - between them covering every container class the page
-# renders (pseudonymised, clear, numeric and descriptor).
+# One import meter carrying an MPAN and a login email (the email must never appear on the default
+# page), and one inverter carrying a serial, a model and an entity descriptor - between them covering
+# every container the page renders (account ids, strings, numbers and descriptors).
 SAMPLE_REPORT = {
     "automatic": True,
     "inverters": [
@@ -110,14 +110,16 @@ SAMPLE_REPORT = {
         {
             "device_id": "octopus:1200023305967",
             "direction": "import",
-            "account_ids": {"mpan": "1200023305967"},
+            "account_ids": {"mpan": "1200023305967", "login": "jane@example.com"},
             "tariff": {"info": {"code": "E-1R-AGILE-24-10-01-A"}},
         }
     ],
 }
 
-# The MPAN seeded above - identifying, so the redacted page must not carry it in any form.
+# The MPAN seeded above - an identifier, so it is published on both views
 SAMPLE_MPAN = "1200023305967"
+# The login email seeded above - withheld from the default view, shown only with ?raw=1
+SAMPLE_EMAIL = "jane@example.com"
 
 
 def _make_web(my_predbat, coordinator, names=("givtcp", "octopus", "gecloud")):
@@ -177,7 +179,7 @@ def test_discovery_page_renders_the_catalogue(my_predbat):
 
 
 def test_discovery_page_is_redacted_unless_raw_is_asked_for(my_predbat):
-    """The MPAN is pseudonymised by default and only visible with ?raw=1.
+    """The email is withheld by default and only visible with ?raw=1; the MPAN is an identifier and shows on both.
 
     Run against the real Coordinator and Redactor, so this fails if redaction regresses, not only
     if the page forgets which accessor to call.
@@ -189,22 +191,22 @@ def test_discovery_page_is_redacted_unless_raw_is_asked_for(my_predbat):
         coordinator = _real_coordinator(my_predbat)
 
         redacted = _render(my_predbat, coordinator)
-        if SAMPLE_MPAN in redacted:
-            print(f"  ERROR: the MPAN {SAMPLE_MPAN} reached the default (redacted) page")
+        if SAMPLE_EMAIL in redacted:
+            print(f"  ERROR: the email {SAMPLE_EMAIL} reached the default (redacted) page")
             failed = True
-        if "#" not in redacted:
-            print("  ERROR: expected a pseudonym token on the redacted page")
+        if SAMPLE_MPAN not in redacted:
+            print(f"  ERROR: the MPAN {SAMPLE_MPAN} is an identifier and should be readable on the default page")
             failed = True
 
         raw = _render(my_predbat, coordinator, {"raw": "1"})
-        if SAMPLE_MPAN not in raw:
-            print(f"  ERROR: the MPAN {SAMPLE_MPAN} should be visible with ?raw=1 - that is the point of the raw view")
+        if SAMPLE_EMAIL not in raw:
+            print(f"  ERROR: the email {SAMPLE_EMAIL} should be visible with ?raw=1 - that is the point of the raw view")
             failed = True
     finally:
         my_predbat.components = saved
 
     if not failed:
-        print("PASS: the page is redacted by default and shows identifying values only with ?raw=1")
+        print("PASS: the page withholds the email by default and shows it only with ?raw=1; the MPAN shows on both")
     return failed
 
 
@@ -362,7 +364,7 @@ def test_discovery_route_is_registered(my_predbat):
 
 
 def test_discovery_api_is_redacted_by_default(my_predbat):
-    """The modern UI API only returns identifying values when raw mode is explicit."""
+    """The API follows the release catalogue: identifiers are published, email needs raw mode."""
     print("**** test_discovery_api_is_redacted_by_default ****")
     failed = False
     saved = getattr(my_predbat, "components", None)
@@ -370,11 +372,14 @@ def test_discovery_api_is_redacted_by_default(my_predbat):
         w = _make_web(my_predbat, _real_coordinator(my_predbat))
         redacted = json.loads(asyncio.run(w.html_api_discovery(FakeRequest())).text)
         raw = json.loads(asyncio.run(w.html_api_discovery(FakeRequest({"raw": "1"}))).text)
-        if SAMPLE_MPAN in json.dumps(redacted):
-            print("  ERROR: the default API response exposed an MPAN")
+        if SAMPLE_EMAIL in json.dumps(redacted):
+            print("  ERROR: the default API response exposed an email")
             failed = True
-        if SAMPLE_MPAN not in json.dumps(raw):
-            print("  ERROR: raw mode did not return the MPAN")
+        if SAMPLE_EMAIL not in json.dumps(raw):
+            print("  ERROR: raw mode did not return the email")
+            failed = True
+        if SAMPLE_MPAN not in json.dumps(redacted) or SAMPLE_MPAN not in json.dumps(raw):
+            print("  ERROR: published identifiers must remain readable in both views")
             failed = True
     finally:
         my_predbat.components = saved

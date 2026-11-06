@@ -6,6 +6,7 @@ import {
   faBars,
   faCircleCheck,
   faCircleNotch,
+  faCircleQuestion,
   faBatteryEmpty,
   faBatteryQuarter,
   faBatteryHalf,
@@ -54,8 +55,10 @@ type AppNavigationProps = {
   layout: 'side' | 'horizontal'
   onLayoutChange: (layout: 'side' | 'horizontal') => void
 
-  calculating: boolean
+  planStatus: 'unavailable' | 'calculating' | 'ready' | 'stale'
   batterySoc: number | null
+  batteryStale?: boolean
+  socBoundaries: { low: number; medium: number }
   chatEnabled: boolean
 
   version: string
@@ -135,6 +138,7 @@ const navigationGroups: NavigationGroup[] = [
         href: './config',
         icon: faSliders
       },
+      { label: 'Theme', href: './theme', icon: faCircleHalfStroke },
       {
         label: 'Apps',
         href: './apps',
@@ -230,8 +234,10 @@ export default function AppNavigation({
   onCollapsedChange,
   layout,
   onLayoutChange,
-  calculating,
+  planStatus,
   batterySoc,
+  batteryStale = false,
+  socBoundaries,
   chatEnabled,
   version
 }: AppNavigationProps) {
@@ -322,6 +328,7 @@ export default function AppNavigation({
 
   const pathPage = window.location.pathname.replace(/\/+$/, '').split('/').pop() ?? 'dash'
   const currentPage = new URLSearchParams(window.location.search).get('page') ?? (pathPage === 'ui' || !pathPage ? 'dash' : pathPage)
+  const planStatusLabel = planStatus === 'calculating' ? 'Predbat is calculating' : planStatus === 'ready' ? 'Plan generated' : planStatus === 'stale' ? 'Showing a cached plan' : 'Plan status unavailable'
 
   return (
     <>
@@ -394,27 +401,29 @@ export default function AppNavigation({
 
             <div className="navigation-live-status">
               <span
-                className={['navigation-plan-status', calculating ? 'is-calculating' : 'is-ready']
-                  .filter(Boolean)
-                  .join(' ')}
-                title={calculating ? 'Predbat is calculating' : 'Plan generated'}
+                className={`navigation-plan-status is-${planStatus}`}
+                title={planStatusLabel}
+                role="img"
+                aria-label={planStatusLabel}
               >
                 <FontAwesomeIcon
-                  icon={calculating ? faCircleNotch : faCircleCheck}
-                  spin={calculating}
+                  icon={planStatus === 'calculating' ? faCircleNotch : planStatus === 'ready' ? faCircleCheck : faCircleQuestion}
+                  spin={planStatus === 'calculating'}
                 />
               </span>
 
               {batterySoc !== null && (
                 <span
-                  className="navigation-battery-status"
-                  title={`Battery state of charge: ${Math.round(batterySoc)}%`}
+                  className={`navigation-battery-status ${batterySoc <= socBoundaries.low ? 'is-low' : batterySoc <= socBoundaries.medium ? 'is-medium' : 'is-high'}`}
+                  title={`${batteryStale ? 'Last known' : 'Live'} battery state of charge: ${Math.round(batterySoc)}%`}
                 >
                   <FontAwesomeIcon icon={getBatteryIcon(batterySoc)} />
 
                   <span className="navigation-battery-soc">{Math.round(batterySoc)}%</span>
+                  {batteryStale && <small>Cached</small>}
                 </span>
               )}
+              {batterySoc === null && <span className="navigation-battery-status" title="Live battery reading unavailable">Battery —</span>}
             </div>
           </div>
 

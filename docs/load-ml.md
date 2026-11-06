@@ -29,7 +29,7 @@ The ML Load Prediction component uses a lightweight multi-layer perceptron (MLP)
 - Uses historical and future energy import/export rates as input features
 - Deep neural network with 3 hidden layers [512, 256, 64 neurons]
 - Optimised with He initialisation and AdamW weight decay for robust training
-- Automatically trains on historical data (requires at least 1 day, recommended 7+ days; fetches up to `load_ml_max_days_history` days from HA and accumulates up to `load_ml_database_days` days in the on-disk database)
+- Automatically trains on historical data (requires about 3.5 days with the default validation window, recommended 7+ days; fetches up to `load_ml_max_days_history` days from HA and accumulates up to `load_ml_database_days` days in the on-disk database)
 - Fine-tunes periodically (every 2 hours by default) using full dataset to adapt to changing patterns
 - Time-weighted training prioritizes recent data while learning from historical patterns
 - Model persists across restarts
@@ -110,9 +110,22 @@ If you see `Forward temperature/rate forecast ran out for N of 576 rollout steps
 
 ### Training Process
 
+Training targets are strictly older than the validation window (48 hours when run by
+the LoadML component). The held-out observations are not used as training targets,
+training inputs or to fit normalisation statistics. Validation still uses real earlier
+observations as context for each prediction; the separate rollout diagnostic reports
+how errors compound when predictions are fed back instead.
+
+Model version 11 retrains weights saved by earlier versions because those weights were
+fitted on the validation period. The accumulated history database is preserved. The
+corrected validation scores may be higher and should not be compared directly with
+earlier in-sample scores. This correction does not guarantee future forecast accuracy
+or impose a bound on forecast changes after retraining. Keep `load_ml_source: false`
+while evaluating matching future periods against actual consumption.
+
 **Initial Training:**
 
-- Requires at least 1 day of historical data (7+ days recommended, configurable via `load_ml_max_days_history`)
+- Requires enough history for 24 hours of lookback, 48 hours of validation and at least 128 older training samples: about 3.5 days of continuous readings (7+ days recommended, configurable via `load_ml_max_days_history`)
 - Fetches up to `load_ml_max_days_history` days (default: 28) from HA, then merges with accumulated database history (up to `load_ml_database_days`, default: 90 days)
 - Uses 100 epochs with early stopping (patience=5)
 - Batch size: 128 samples

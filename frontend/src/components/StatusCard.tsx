@@ -57,7 +57,8 @@ function formatTimeAgo(value: string | null) {
 }
 
 function getStatusHealth(status: string) {
-  const normalized = status.toLowerCase()
+  const normalized = status.trim().toLowerCase()
+  if (['', 'unknown', 'unavailable', 'starting', 'pending'].includes(normalized)) return 'unknown'
 
   if (normalized.includes('error') || normalized.includes('unhealthy')) {
     return 'error'
@@ -160,7 +161,7 @@ function StatusCard({
 
         {/* Last update */}
         <div className="status-card-detail">
-          <span>Plan Updated</span>
+          <span>Plan generated</span>
 
           <strong>{formatTimeAgo(lastUpdated)}</strong>
         </div>
@@ -180,6 +181,7 @@ function StatusCard({
           <label className="toggle-switch">
             <input
               type="checkbox"
+              aria-label="Predbat Active"
               checked={active}
               onChange={(event) => onActiveChange(event.target.checked)}
             />
@@ -198,6 +200,7 @@ function StatusCard({
           <label className="toggle-switch">
             <input
               type="checkbox"
+              aria-label="Read Only"
               checked={readOnly}
               onChange={(event) => onReadOnlyChange(event.target.checked)}
             />
@@ -218,6 +221,7 @@ function StatusCard({
           <label className="toggle-switch">
             <input
               type="checkbox"
+              aria-label="Debug"
               checked={debugEnabled}
               onChange={(event) => onDebugChange(event.target.checked)}
             />

@@ -41,15 +41,16 @@
 }
 
 .metric-label {
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  text-transform: none;
+  letter-spacing: normal;
 }
 
 .metric-value {
   font-size: 1.5rem;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
   line-height: 1.2;
   color: var(--color-text);
 }
@@ -91,8 +92,13 @@
   color: var(--color-text-subtle);
 }
 
-.reason-tooltip:hover {
-  color: var(--color-text-secondary);
+.reason-tooltip summary { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; min-height: 24px; cursor: pointer; list-style: none; }
+.reason-tooltip summary::-webkit-details-marker { display: none; }
+
+@media (hover: hover) {
+  .reason-tooltip:hover {
+    color: var(--color-text-secondary);
+  }
 }
 
 .reason-tooltip-content {
@@ -116,13 +122,13 @@
   transition: opacity 0.15s ease;
 }
 
-.reason-tooltip:hover .reason-tooltip-content {
+.reason-tooltip[open] .reason-tooltip-content {
   visibility: visible;
   opacity: 1;
 }
 
 .rate-good {
-  color: var(--color-success);
+  color: var(--color-success-text);
 }
 
 .rate-bad {
@@ -252,13 +258,15 @@
   align-items: center;
   gap: 0.35rem;
   color: var(--color-charge);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 600;
   text-decoration: none;
 }
 
-.plan-summary-full-link:hover {
-  text-decoration: underline;
+@media (hover: hover) {
+  .plan-summary-full-link:hover {
+    text-decoration: underline;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -338,12 +346,11 @@
   margin-bottom: 0.5rem;
 }
 
-.plan-summary-context-now,
-.plan-summary-context-next {
-  font-size: 0.7rem;
+.plan-summary-context-now, .plan-summary-context-next {
+  font-size: 0.75rem;
   font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  letter-spacing: normal;
+  text-transform: none;
   color: var(--color-text-muted);
 }
 
