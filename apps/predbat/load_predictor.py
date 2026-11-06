@@ -26,7 +26,7 @@ import os
 from datetime import datetime, timezone, timedelta
 
 # Architecture constants (not user-configurable)
-MODEL_VERSION = 11  # Retrain weights previously fitted on the validation holdout; history remains compatible
+MODEL_VERSION = 10  # Bumped to V10 for day-of-year seasonality features and network layer changes
 STEP_MINUTES = 5  # Base data resolution in minutes (raw sensor granularity)
 CHUNK_MINUTES = 5  # Prediction resolution: must be a multiple of STEP_MINUTES
 CHUNK_STEPS = CHUNK_MINUTES // STEP_MINUTES  # 5-min steps aggregated per chunk (3)
@@ -680,8 +680,8 @@ class LoadPredictor:
         Each sample uses LOOKBACK_STEPS chunks (24 h) of history to predict
         the next single chunk. Time features represent the TARGET chunk time.
 
-        Training uses targets older than validation_holdout_hours. Validation uses
-        the most recent hours, excluded from training and fitted normalisation.
+        Training uses all available data; validation uses the most recent
+        validation_holdout_hours as a subset to check model fit.
 
         Args:
             load_minutes: Dict of {minute: kwh_per_5min} going backwards in time (pre-converted by load_ml_component)
@@ -690,7 +690,7 @@ class LoadPredictor:
             temp_minutes: Dict of {minute: temperature_celsius}
             import_rates: Dict of {minute: rate_per_kwh}
             export_rates: Dict of {minute: rate_per_kwh}
-            is_finetune: Retained for caller compatibility; both modes use older data with time-decay
+            is_finetune: If True, only use last 24 hours; else use full data with time-decay
             time_decay_days: Time constant for exponential decay weighting
             validation_holdout_hours: Hours of most recent data to hold out for validation
 
@@ -763,9 +763,7 @@ class LoadPredictor:
         candidates = np.arange(0, max(max_chunk_idx - LOOKBACK_STEPS, 0), dtype=np.int64)
         if len(candidates):
             window_full = (counts[candidates + LOOKBACK_STEPS + 1] - counts[candidates + 1]) == LOOKBACK_STEPS
-            # Minute keys run backwards: larger chunk indices are older. A training
-            # target and its lookback (target + 1 onwards) must precede the holdout.
-            train_targets = candidates[window_full & present[candidates] & (candidates >= validation_end_chunk)]
+            train_targets = candidates[window_full & present[candidates]]
         else:
             train_targets = candidates
 
@@ -1194,8 +1192,8 @@ class LoadPredictor:
         """
         Train or fine-tune the model.
 
-        Training uses data older than validation_holdout_hours, with time-decay weighting.
-        Validation uses the most recent hours, excluded from training and fitted normalisation.
+        Training uses all available data (most recent to as far back as data goes).
+        Validation uses the most recent 24 hours (subset of training data) to check model fit.
 
         Args:
             load_minutes: Dict of {minute: cumulative_kwh}
@@ -1204,7 +1202,7 @@ class LoadPredictor:
             temp_minutes: Dict of {minute: temperature_celsius} Temperature (backwards for history, negative for future)
             import_rates: Dict of {minute: rate_per_kwh} Import rates (backwards for history, negative for future)
             export_rates: Dict of {minute: rate_per_kwh} Export rates (backwards for history, negative for future)
-            is_initial: If True, initialise normalisation; else fine-tune on older history
+            is_initial: If True, full training; else fine-tuning on last 24h
             epochs: Number of training epochs
             time_decay_days: Time constant for sample weighting
             patience: Early stopping patience

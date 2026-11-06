@@ -194,22 +194,22 @@ def test_create_dataset_output_is_stable(my_predbat=None):
         print("✓ time-decay weights normalised to the sample count")
 
     # A checksum over the feature matrix catches any change in row content or ordering.
-    # The original 1151-row fixture now excludes its 288 most-recent validation rows.
-    # The retained rows must not move for a memory refactor.
+    # Recorded from the list-of-rows construction this replaced; if numpy ever changes its
+    # summation this may need re-recording, but it must not move for a refactor.
     # X_train assembles rows on demand; materialise it explicitly for the checksum
     checksum = float(np.sum(np.asarray(X_train).astype(np.float64)))
-    expected_checksum = 9490246.489804
+    expected_checksum = 12977609.094096
     if abs(checksum - expected_checksum) > abs(expected_checksum) * 1e-9:
         print("ERROR: feature matrix changed - checksum {:.6f}, expected {:.6f}".format(checksum, expected_checksum))
         failed += 1
     else:
         print("✓ feature matrix checksum unchanged ({:.6f})".format(checksum))
 
-    if X_train.shape[0] != 863:
-        print("ERROR: sample count changed: {} rows, expected 863".format(X_train.shape[0]))
+    if X_train.shape[0] != 1151:
+        print("ERROR: sample count changed: {} rows, expected 1151".format(X_train.shape[0]))
         failed += 1
     else:
-        print("✓ sample count unchanged (863)")
+        print("✓ sample count unchanged (1151)")
 
     return failed
 
