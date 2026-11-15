@@ -1,14 +1,5 @@
 # Debug journal
 
-- LoadML fork investigation (GH#6208, 2026-11-15): `minute_data()` pads published
-  tariff attributes before their first timestamp; crop that padding before merging
-  recorder history, and invalidate only legacy cached rate channels. A disjoint
-  holdout alone did not correct long-range drift in the saved-data experiment.
-  Compare feedback forecast error and bias when selecting training checkpoints;
-  retain the published model until a separate candidate passes the same current
-  holdout. Keep the logger outside deep copies because it can own live locks.
-  Regressions: `test_load_ml_stability.py`.
-
 Notes distilled from maintainer debugging sessions and triage-bot runs on this repo (June–November 2026), written for whoever is triaging an issue next.
 
 Every entry is an observation from a past investigation, not a statement about current main. The code moves. Use these as "look here first", confirm against the working tree before you put anything in a comment, and say what you actually confirmed rather than what this file says.

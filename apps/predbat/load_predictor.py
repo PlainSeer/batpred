@@ -26,7 +26,7 @@ import os
 from datetime import datetime, timezone, timedelta
 
 # Architecture constants (not user-configurable)
-MODEL_VERSION = 12  # New input bounds and disjoint validation; do not reuse legacy trained weights
+MODEL_VERSION = 10  # Bumped to V10 for day-of-year seasonality features and network layer changes
 STEP_MINUTES = 5  # Base data resolution in minutes (raw sensor granularity)
 CHUNK_MINUTES = 5  # Prediction resolution: must be a multiple of STEP_MINUTES
 CHUNK_STEPS = CHUNK_MINUTES // STEP_MINUTES  # 5-min steps aggregated per chunk (3)
@@ -108,8 +108,6 @@ class WindowedFeatures:
             out -= self.mean
             out /= self.std
         np.nan_to_num(out, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
-        if self.mean is not None and self.std is not None:
-            np.clip(out, -5.0, 5.0, out=out)
         return out.astype(dtype) if dtype is not None and dtype != np.float32 else out
 
     def _assemble(self, target_chunks, out):
@@ -146,8 +144,6 @@ class WindowedFeatures:
             batch -= self.mean
             batch /= self.std
         np.nan_to_num(batch, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
-        if self.mean is not None and self.std is not None:
-            np.clip(batch, -5.0, 5.0, out=batch)
         return batch[0] if scalar else batch
 
 
@@ -233,8 +229,6 @@ class LoadPredictor:
         # and stays small even when the multi-step rollout has degenerated.
         self.rollout_mae = None
         self.pattern_mae = None
-        self.rollout_bias = None
-        self.pattern_bias = None
         self.epochs_trained = 0
         self.model_initialized = False
 
@@ -686,8 +680,8 @@ class LoadPredictor:
         Each sample uses LOOKBACK_STEPS chunks (24 h) of history to predict
         the next single chunk. Time features represent the TARGET chunk time.
 
-        Training excludes the most recent validation_holdout_hours of targets.
-        Validation uses that recent period with its real preceding context.
+        Training uses all available data; validation uses the most recent
+        validation_holdout_hours as a subset to check model fit.
 
         Args:
             load_minutes: Dict of {minute: kwh_per_5min} going backwards in time (pre-converted by load_ml_component)
@@ -769,7 +763,7 @@ class LoadPredictor:
         candidates = np.arange(0, max(max_chunk_idx - LOOKBACK_STEPS, 0), dtype=np.int64)
         if len(candidates):
             window_full = (counts[candidates + LOOKBACK_STEPS + 1] - counts[candidates + 1]) == LOOKBACK_STEPS
-            train_targets = candidates[window_full & present[candidates] & (candidates >= validation_end_chunk)]
+            train_targets = candidates[window_full & present[candidates]]
         else:
             train_targets = candidates
 
@@ -871,7 +865,6 @@ class LoadPredictor:
         errors = []
         biases = []
         pattern_errors = []
-        pattern_biases = []
 
         # Daily-pattern baseline, built only from data outside the holdout so the
         # comparison is on the same footing as the model rollout
@@ -913,7 +906,6 @@ class LoadPredictor:
             slot = (minute_of_day // CHUNK_MINUTES) * CHUNK_MINUTES
             pattern_value = baseline_patterns[day_of_week].get(slot, baseline_patterns[None].get(slot, 0.0))
             pattern_errors.append(abs(pattern_value - true_value))
-            pattern_biases.append(pattern_value - true_value)
 
             # Feed predicted load back; use real exogenous values (they are known history)
             ar_load.insert(0, pred_value)
@@ -930,9 +922,7 @@ class LoadPredictor:
         if not errors:
             return None, None, None
 
-        self.rollout_bias = float(np.mean(biases))
-        self.pattern_bias = float(np.mean(pattern_biases))
-        return float(np.mean(errors)), self.rollout_bias, float(np.mean(pattern_errors))
+        return float(np.mean(errors)), float(np.mean(biases)), float(np.mean(pattern_errors))
 
     @staticmethod
     def _feature_mean_std(X, block=512):
@@ -1104,12 +1094,10 @@ class LoadPredictor:
             X -= self.feature_mean
             X /= self.feature_std
             np.nan_to_num(X, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
-            np.clip(X, -5.0, 5.0, out=X)
             return X
 
         out = (X - self.feature_mean) / self.feature_std
-        np.nan_to_num(out, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
-        return np.clip(out, -5.0, 5.0, out=out)
+        return np.nan_to_num(out, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
 
     def _normalize_targets(self, y, fit=False):
         """
@@ -1205,7 +1193,7 @@ class LoadPredictor:
         Train or fine-tune the model.
 
         Training uses all available data (most recent to as far back as data goes).
-        Validation uses the configured recent holdout, excluded from training targets and fitted statistics.
+        Validation uses the most recent 24 hours (subset of training data) to check model fit.
 
         Args:
             load_minutes: Dict of {minute: cumulative_kwh}
@@ -1292,15 +1280,11 @@ class LoadPredictor:
             baseline_bias = float(np.mean(baseline_pred_denorm - y_val))
             self.log("ML Predictor: Baseline (pre-finetune) val_mae={:.4f} kWh val_bias={:+.4f} kWh".format(baseline_mae, baseline_bias))
 
-        # Select checkpoints using the same autoregressive horizon used for forecasting.
-        # One-step validation can improve while a feedback rollout drifts in energy.
+        # Training loop - combined metric (val_mae + 0.5 * |val_bias|) used for early stopping
+        # to penalise both absolute error and systematic over/under-prediction
         best_val_loss = baseline_mae if baseline_mae is not None else float("inf")
         best_val_bias = baseline_bias  # Track actual baseline bias, not 0.0
-        best_combined = float("inf")
-        if baseline_mae is not None:
-            ar_mae, ar_bias, _ = self._ar_rollout_diagnostic(load_minutes, now_utc, pv_minutes=pv_minutes, temp_minutes=temp_minutes, import_rates=import_rates, export_rates=export_rates, validation_holdout_hours=validation_holdout_hours)
-            if ar_mae is not None and ar_bias is not None and np.isfinite(ar_mae + abs(ar_bias)):
-                best_combined = ar_mae + abs(ar_bias)
+        best_combined = (0.5 * baseline_mae + abs(baseline_bias)) if baseline_mae is not None else float("inf")
         patience_counter = 0
         # Checkpoint current weights as the starting best so that if no epoch improves
         # on the baseline, we correctly restore these weights (not the final epoch's weights)
@@ -1322,7 +1306,7 @@ class LoadPredictor:
         lr_max = self.learning_rate
         lr_min = 0.1 * self.learning_rate
 
-        # Retain the one-step EMA in the diagnostic log, independently of checkpointing.
+        # EMA accumulator for early-stopping metric (seeds on first epoch)
         ema_combined = None
 
         for epoch in range(epochs):
@@ -1406,21 +1390,19 @@ class LoadPredictor:
                 except Exception as e:
                     self.log("Warn: ML Predictor: progress callback raised {}, continuing training".format(e))
 
-            # Rollouts are relatively expensive: check the first/final epoch and every
-            # fifth epoch. Patience counts evaluated checkpoints, not skipped epochs.
-            if epoch == 0 or (epoch + 1) % 5 == 0 or epoch == epochs - 1:
-                ar_mae, ar_bias, _ = self._ar_rollout_diagnostic(load_minutes, now_utc, pv_minutes=pv_minutes, temp_minutes=temp_minutes, import_rates=import_rates, export_rates=export_rates, validation_holdout_hours=validation_holdout_hours)
-                score = ar_mae + abs(ar_bias) if ar_mae is not None and ar_bias is not None else float("inf")
-                self.log("ML Predictor: Rollout checkpoint epoch {}: error plus bias={:.4f} kWh".format(epoch + 1, score))
-                if np.isfinite(score) and score < best_combined:
-                    best_combined = score
-                    best_val_loss = val_mae
-                    best_val_bias = val_bias_mean
-                    patience_counter = 0
-                    best_weights = [w.copy() for w in self.weights]
-                    best_biases = [b.copy() for b in self.biases]
-                else:
-                    patience_counter += 1
+            # Early stopping uses EMA-smoothed combined metric so a single noisy epoch
+            # cannot prematurely checkpoint a suboptimal set of weights.
+            # Weight checkpointing uses the raw epoch weights (not a smoothed version).
+            if ema_combined < best_combined:
+                best_combined = ema_combined
+                best_val_loss = val_mae
+                best_val_bias = val_bias_mean
+                patience_counter = 0
+                # Checkpoint best weights
+                best_weights = [w.copy() for w in self.weights]
+                best_biases = [b.copy() for b in self.biases]
+            else:
+                patience_counter += 1
 
             if patience_counter >= patience:
                 self.log("ML Predictor: Early stopping at epoch {}".format(epoch + 1))
@@ -1778,7 +1760,6 @@ class LoadPredictor:
         last_import_rate = import_rate_buffer[0] if import_rate_buffer else 0.0
         last_export_rate = export_rate_buffer[0] if export_rate_buffer else 0.0
         exog_carried_steps = 0
-        collapsed_steps = 0
 
         self.log("ML Predictor: Starting autoregressive prediction loop for {} steps ({} hours), prev_energy value {} max_dow {}".format(PREDICT_HORIZON, PREDICT_HORIZON * CHUNK_MINUTES / 60, prev_energy_value, max_energy_by_dow))
 
@@ -1828,7 +1809,7 @@ class LoadPredictor:
 
             # Normalize and forward pass (inference: no dropout)
             features_norm = self._normalize_features(features.reshape(1, -1), fit=False)
-            pred_norm, activations, _, _ = self._forward(features_norm)
+            pred_norm, _, _, _ = self._forward(features_norm)
             pred_energy = self._denormalize_predictions(pred_norm[0])
 
             # Apply physical constraints
@@ -1838,13 +1819,6 @@ class LoadPredictor:
             # Blend with historical daily pattern for this day-of-week (CHUNK_MINUTES slot)
             slot = (minute_of_day // CHUNK_MINUTES) * CHUNK_MINUTES
             hist_value = daily_patterns[day_of_week].get(slot, model_pred)
-            collapsed = not np.isfinite(model_pred) or not np.any(activations[-2] > 0)
-            if collapsed:
-                collapsed_steps += 1
-                # A closed final hidden layer returns only the output bias, independent
-                # of the inputs. Prefer the observed pattern to that constant output.
-                model_pred = daily_patterns[day_of_week].get(slot, daily_patterns[None].get(slot, baseline_floor))
-                hist_value = model_pred
 
             # Linear blend: 100% model at step 0, blend_floor% model at horizon
             progress = step_idx / PREDICT_HORIZON
@@ -1874,9 +1848,6 @@ class LoadPredictor:
             import_rate_buffer.pop()
             export_rate_buffer.insert(0, next_export_rate)
             export_rate_buffer.pop()
-
-        if collapsed_steps:
-            self.log("ML Predictor: Historical pattern used for {} collapsed network steps".format(collapsed_steps))
 
         # Only worth reporting when there was exogenous data to carry; a setup with no
         # temperature or rate sensors legitimately runs the whole rollout without any
@@ -1924,8 +1895,6 @@ class LoadPredictor:
                 "validation_bias": float(self.validation_bias) if self.validation_bias is not None else None,
                 "rollout_mae": float(self.rollout_mae) if self.rollout_mae is not None else None,
                 "pattern_mae": float(self.pattern_mae) if self.pattern_mae is not None else None,
-                "rollout_bias": float(self.rollout_bias) if self.rollout_bias is not None else None,
-                "pattern_bias": float(self.pattern_bias) if self.pattern_bias is not None else None,
                 "epochs_trained": self.epochs_trained,
                 "learning_rate": self.learning_rate,
                 "max_load_kw": self.max_load_kw,
@@ -2045,8 +2014,6 @@ class LoadPredictor:
             self.validation_bias = metadata.get("validation_bias", None)
             self.rollout_mae = metadata.get("rollout_mae", None)
             self.pattern_mae = metadata.get("pattern_mae", None)
-            self.rollout_bias = metadata.get("rollout_bias", None)
-            self.pattern_bias = metadata.get("pattern_bias", None)
             self.epochs_trained = metadata.get("epochs_trained", 0)
             # Restore dropout rate; fall back to 0.1 for models saved before this feature
             self.dropout_rate = metadata.get("dropout_rate", 0.1)

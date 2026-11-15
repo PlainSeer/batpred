@@ -12,7 +12,6 @@ nav:
     - apps-yaml.md
     - energy-rates.md
     - components.md
-    - LoadML stability in this fork: loadml-stability-fork.md
     - discovery-catalogue.md
     - load-ml.md
     - car-charging.md
