@@ -5,6 +5,7 @@ on:
   push:
     branches:
     - main
+    - 'fix/loadml-stability-v9.8.0'
     - 'review/predbat-v9.6.3-modern-ui-20261030'
 jobs:
   pre-commit:

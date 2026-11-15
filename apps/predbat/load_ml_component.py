@@ -20,10 +20,11 @@ every 30 minutes.
 """
 
 import asyncio
+import copy
 import os
 from datetime import datetime, timezone, timedelta
 from component_base import ComponentBase
-from utils import get_now_from_cumulative, dp2, dp4, minute_data
+from utils import get_now_from_cumulative, dp2, dp4, minute_data, str2time
 from load_predictor import LoadPredictor, MODEL_VERSION
 from const import TIME_FORMAT, PREDICT_STEP
 import json
@@ -35,6 +36,7 @@ PREDICTION_INTERVAL_SECONDS = 30 * 60  # 30 minutes between predictions
 
 # Database schema version - increment when the saved format changes to force a clean rebuild
 DATABASE_VERSION = 1
+RATE_HISTORY_VERSION = 2
 
 
 class LoadMLComponent(ComponentBase):
@@ -316,6 +318,24 @@ class LoadMLComponent(ComponentBase):
         """True when iBoost/diverter energy is to be subtracted from load history, re-read so a switch change is picked up without a restart."""
         return bool(self.get_arg("iboost_energy_subtract", True) and self.get_arg("iboost_energy_today", default=None, indirect=False))
 
+    def _rate_attribute_data(self, results, days):
+        """Resample published rates without inventing history before their first valid timestamp."""
+        samples = []
+        for timestamp, value in results.items():
+            try:
+                value = float(value)
+                stamp = str2time(timestamp).astimezone(timezone.utc).replace(second=0, microsecond=0)
+                if not np.isfinite(value):
+                    continue
+            except (ValueError, TypeError, AttributeError):
+                continue
+            samples.append({"state": value, "last_updated": stamp.isoformat()})
+        if not samples:
+            return {}
+        samples.sort(key=lambda item: item["last_updated"])
+        data, _ = minute_data(samples, days, self.now_utc, "state", "last_updated", backwards=True, clean_increment=False, smoothing=False, divide_by=1.0, scale=1.0, pad=False)
+        return data
+
     async def _fetch_load_data(self):
         """
         Fetch and process load data from configured sensors.
@@ -487,39 +507,12 @@ class LoadMLComponent(ComponentBase):
             import_rates_future = self.get_state_wrapper(import_entity, attribute="results")
             import_rates_data = {}
             if import_rates_future:
-                data_array = []
-                for key, value in import_rates_future.items():
-                    data_array.append({"state": value, "last_updated": key})
-                import_rates_data, _ = minute_data(
-                    data_array,
-                    days_to_fetch,
-                    self.now_utc,
-                    "state",
-                    "last_updated",
-                    backwards=True,
-                    clean_increment=False,
-                    smoothing=False,
-                    divide_by=1.0,
-                    scale=1.0,
-                )
+                import_rates_data = self._rate_attribute_data(import_rates_future, days_to_fetch)
+
             export_rates_future = self.get_state_wrapper(export_entity, attribute="results")
             export_rates_data = {}
             if export_rates_future:
-                data_array = []
-                for key, value in export_rates_future.items():
-                    data_array.append({"state": value, "last_updated": key})
-                export_rates_data, _ = minute_data(
-                    data_array,
-                    days_to_fetch,
-                    self.now_utc,
-                    "state",
-                    "last_updated",
-                    backwards=True,
-                    clean_increment=False,
-                    smoothing=False,
-                    divide_by=1.0,
-                    scale=1.0,
-                )
+                export_rates_data = self._rate_attribute_data(export_rates_future, days_to_fetch)
 
             # try to retrieve import and export rate history to detect rate-based load patterns
             # This is optional - it only adds features to the model, and Home Assistant has no history
@@ -897,6 +890,7 @@ class LoadMLComponent(ComponentBase):
                 "age_days": float(self.load_data_age_days),
                 "nan_sentinel": True,
                 "iboost_subtracted": self.iboost_subtract_active(),
+                "rate_history_version": RATE_HISTORY_VERSION,
             }
         )
 
@@ -972,6 +966,12 @@ class LoadMLComponent(ComponentBase):
                 self.temperature_data = array_to_dict(data["temp"])
                 self.import_rates_data = array_to_dict(data["import_rate"])
                 self.export_rates_data = array_to_dict(data["export_rate"])
+                if metadata.get("rate_history_version", 0) != RATE_HISTORY_VERSION:
+                    # Old fetches padded prices over the recorder history. Retain the other
+                    # channels, but rebuild the untrustworthy rate channels from actual history.
+                    self.import_rates_data = {}
+                    self.export_rates_data = {}
+                    self.log("ML Component: Rebuilding legacy rate history; retaining load, PV and temperature")
                 self.load_data_age_days = age_days
                 # Restore last_data_fetch to the save time so that run()'s _shift() will
                 # compute the correct elapsed time and apply the shift exactly once.
@@ -993,6 +993,24 @@ class LoadMLComponent(ComponentBase):
             self.export_rates_data = None
             self.data_ready = False
 
+    @staticmethod
+    def _accept_candidate(candidate, threshold, previous_rollout=None, previous_mae=None):
+        """Require a finite rollout that beats the pattern and does not regress the previous model."""
+        metrics = (candidate.validation_mae, candidate.rollout_mae, candidate.pattern_mae, candidate.rollout_bias, candidate.pattern_bias)
+        if any(value is None or not np.isfinite(value) for value in metrics):
+            return False, "missing or non-finite validation metrics"
+        if candidate.validation_mae > threshold:
+            return False, "one-step validation threshold exceeded"
+        score = candidate.rollout_mae + abs(candidate.rollout_bias)
+        pattern_score = candidate.pattern_mae + abs(candidate.pattern_bias)
+        if score > pattern_score + 1e-9:
+            return False, "rollout error plus bias is worse than the historical pattern"
+        if previous_mae is not None and np.isfinite(previous_mae) and candidate.rollout_mae > previous_mae + 1e-9:
+            return False, "rollout accuracy is worse than the previous model on the same history"
+        if previous_rollout is not None and np.isfinite(previous_rollout) and score > previous_rollout + 1e-9:
+            return False, "rollout is worse than the previous model on the same history"
+        return True, "rollout accepted"
+
     async def _do_training(self, is_initial):
         """
         Perform model training.
@@ -1000,6 +1018,11 @@ class LoadMLComponent(ComponentBase):
         Args:
             is_initial: True for full training, False for fine-tuning
         """
+        attempted = datetime.now(timezone.utc)
+        last_attempt = getattr(self, "last_training_attempt", None)
+        if last_attempt and (attempted - last_attempt).total_seconds() < self.ml_retrain_interval_seconds:
+            return
+        self.last_training_attempt = attempted
         # Snapshot data under the lock so we can release it before the CPU-bound
         # training call.  predictor.train() can take 30-120 seconds on slow hardware
         # and must NOT run while holding data_lock or the asyncio event loop will freeze.
@@ -1028,10 +1051,27 @@ class LoadMLComponent(ComponentBase):
         # Lock released - event loop is free during training
 
         try:
+            previous_rollout = None
+            previous_mae = None
+            if self.predictor.model_initialized:
+                previous_mae, previous_bias, _ = self.predictor._ar_rollout_diagnostic(
+                    load_data_snap,
+                    now_utc_snap,
+                    pv_minutes=pv_data_snap,
+                    temp_minutes=temp_data_snap,
+                    import_rates=import_rates_snap,
+                    export_rates=export_rates_snap,
+                    validation_holdout_hours=holdout_hours,
+                )
+                if previous_mae is not None and previous_bias is not None:
+                    previous_rollout = previous_mae + abs(previous_bias)
+            # Train a separate candidate: rejection or an exception must not overwrite
+            # the weights, normalisation or optimiser state of the published model.
+            candidate = copy.deepcopy(self.predictor, {id(self.predictor.log): self.predictor.log})
             if is_initial:
                 # Curriculum: progressively expand the training window from oldest week
                 # forward so the model learns gradually from historical structure.
-                val_mae = self.predictor.train_curriculum(
+                val_mae = candidate.train_curriculum(
                     load_data_snap,
                     now_utc_snap,
                     pv_minutes=pv_data_snap,
@@ -1048,7 +1088,7 @@ class LoadMLComponent(ComponentBase):
                     progress_callback=self.update_success_timestamp,
                 )
             else:
-                val_mae = self.predictor.train_curriculum(
+                val_mae = candidate.train_curriculum(
                     load_data_snap,
                     now_utc_snap,
                     pv_minutes=pv_data_snap,
@@ -1066,6 +1106,23 @@ class LoadMLComponent(ComponentBase):
                 )
 
             if val_mae is not None:
+                candidate.rollout_mae, candidate.rollout_bias, candidate.pattern_mae = candidate._ar_rollout_diagnostic(
+                    load_data_snap,
+                    now_utc_snap,
+                    pv_minutes=pv_data_snap,
+                    temp_minutes=temp_data_snap,
+                    import_rates=import_rates_snap,
+                    export_rates=export_rates_snap,
+                    validation_holdout_hours=holdout_hours,
+                )
+                accepted, reason = self._accept_candidate(candidate, self.ml_validation_threshold, previous_rollout, previous_mae)
+                if not accepted:
+                    self.log("ML Component: Candidate rejected ({}); retaining the previous model".format(reason))
+                    if not self.predictor.model_initialized:
+                        self.model_valid = False
+                        self.model_status = "fallback_validation"
+                    return
+                self.predictor = candidate
                 self.last_train_time = datetime.now(timezone.utc)
                 self.initial_training_done = True
 

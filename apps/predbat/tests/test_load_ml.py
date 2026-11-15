@@ -3684,6 +3684,15 @@ def _test_component_marks_itself_alive_during_training():
     class FakePredictor:
         """Captures the kwargs the component passes, and pulses the callback like a real run."""
 
+        model_initialized = False
+        log = staticmethod(lambda *args: None)
+        validation_mae = 0.05
+        pattern_bias = 0.0
+
+        def _ar_rollout_diagnostic(self, *args, **kwargs):
+            """Provide passing rollout scores without performing training."""
+            return 0.05, 0.0, 0.1
+
         def train_curriculum(self, *args, **kwargs):
             """Record every call's progress callback and fire it once, as an epoch would.
 
@@ -3724,12 +3733,14 @@ def _test_component_marks_itself_alive_during_training():
     component.model_status = "not_initialized"
     component.last_train_time = None
     component.initial_training_done = False
+    component.ml_retrain_interval_seconds = 7200
 
     # Both paths, because _do_training picks a different train_curriculum call site for each - the
     # initial curriculum or the fine-tune - and wiring only one of them up leaves the other able to
     # blow past the liveness window unnoticed
     for is_initial in (False, True):
         recorded.clear()
+        component.last_training_attempt = None
         component.last_success_timestamp = None
         asyncio.run(component._do_training(is_initial=is_initial))
 
