@@ -446,7 +446,7 @@ class KrakenAPI(ComponentBase, _AUTH_BASE):
         try:
             self.requests_total += 1
             timeout = aiohttp.ClientTimeout(total=30)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with self.http_session(timeout=timeout) as session:
                 async with session.post(url, json={"query": query}, headers=headers) as response:
                     if response.status != 200:
                         # Include the response body — Kraken returns GraphQL validation errors
@@ -1019,7 +1019,7 @@ class KrakenAPI(ComponentBase, _AUTH_BASE):
         pages = 0
         try:
             timeout = aiohttp.ClientTimeout(total=30)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with self.http_session(timeout=timeout) as session:
                 while url and pages < 3:
                     async with session.get(url, auth=auth, headers=headers) as response:
                         if response.status != 200:
@@ -1193,7 +1193,7 @@ class KrakenAPI(ComponentBase, _AUTH_BASE):
         http_error_status = None
         try:
             timeout = aiohttp.ClientTimeout(total=30)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with self.http_session(timeout=timeout) as session:
                 async with session.get(url) as response:
                     if response.status != 200:
                         http_error_status = response.status
@@ -1750,7 +1750,7 @@ class KrakenAPI(ComponentBase, _AUTH_BASE):
         try:
             self.requests_total += 1
             timeout = aiohttp.ClientTimeout(total=30)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with self.http_session(timeout=timeout) as session:
                 async with session.get(url, headers=headers) as response:
                     status = response.status
                     body = await response.json(content_type=None) if status == 200 else await response.text()
@@ -2061,14 +2061,17 @@ class KrakenAPI(ComponentBase, _AUTH_BASE):
         if not self.current_tariff or not self.import_mpan:
             return
         now_utc = datetime.now(timezone.utc)
-        refreshed = False
+        self.billing.random_delay = self.get_arg("plan_random_delay", 0) > 0
         # The first run only publishes what was cached, keeping a restart free of API calls; the read follows a cycle later
         if not first and self.billing.due(now_utc):
             mpans = {"import": (self.account_id, self.import_mpan), "export": (self.export_account_id or self.account_id, self.export_mpan) if self.export_mpan else None}
-            await self.billing.refresh(self.async_graphql_query, mpans, now_utc)
-            refreshed = True
-        if refreshed or first:
+            await self.billing.read(self.async_graphql_query, mpans, now_utc, self.provider, app="kraken")
+        elif first:
             self.billing.publish(self.provider, now_utc, app="kraken")
+
+    async def final(self):
+        """Cancel a background billing read that is still running."""
+        self.billing.stop()
 
 
 async def test_kraken_api(
