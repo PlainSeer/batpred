@@ -1,8 +1,8 @@
 # LoadML stability changes in this fork
 
-This branch combines the official PredBat v9.8.0 release with the fork's existing
-modern interface and focused LoadML changes. It does not import unreleased backend
-changes from another fork.
+This branch starts from the official PredBat v9.8.0 release and adds focused
+LoadML changes. It uses the official interface and does not carry the fork's
+modern-interface additions or unreleased backend changes from another fork.
 
 ## What changes
 
@@ -33,6 +33,17 @@ If no initial candidate passes validation, the existing standard PredBat load
 forecast remains the planning fallback. A rejected update retains the previous
 model. The usual model-age limit still applies. These checks reduce a known
 failure mode; they do not guarantee the timing of unpredictable household use.
+
+Successful startup data collection records component health before the first
+training run. A rejected initial candidate reports `fallback_validation`, with
+its reason and scores in the `last_training_result` attribute of the ML stats
+sensor. The same summary appears in the add-on console. Rejection keeps the
+standard forecast available and waits for the configured retry interval;
+waiting cycles no longer claim a training run has started.
+
+These health/reporting corrections do not improve the model's forecast accuracy
+or change candidate acceptance. An accuracy experiment that improves validation
+but worsens a separate later forecast must not be promoted on that evidence.
 
 Installing the branch does not enable LoadML as a planning source or change any
 AlphaESS, EV, iBoost, tariff or inverter-control settings. Observe the forecast
