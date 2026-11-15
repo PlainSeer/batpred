@@ -194,22 +194,21 @@ def test_create_dataset_output_is_stable(my_predbat=None):
         print("✓ time-decay weights normalised to the sample count")
 
     # A checksum over the feature matrix catches any change in row content or ordering.
-    # Recorded from the list-of-rows construction this replaced; if numpy ever changes its
-    # summation this may need re-recording, but it must not move for a refactor.
+    # This fixture excludes the 288 targets in the recent 24-hour validation holdout.
     # X_train assembles rows on demand; materialise it explicitly for the checksum
     checksum = float(np.sum(np.asarray(X_train).astype(np.float64)))
-    expected_checksum = 12977609.094096
+    expected_checksum = 9490246.489804
     if abs(checksum - expected_checksum) > abs(expected_checksum) * 1e-9:
         print("ERROR: feature matrix changed - checksum {:.6f}, expected {:.6f}".format(checksum, expected_checksum))
         failed += 1
     else:
         print("✓ feature matrix checksum unchanged ({:.6f})".format(checksum))
 
-    if X_train.shape[0] != 1151:
-        print("ERROR: sample count changed: {} rows, expected 1151".format(X_train.shape[0]))
+    if X_train.shape[0] != 863 or np.any(X_train.targets < 288):
+        print("ERROR: expected 863 training targets outside the 288-chunk holdout, got {} rows".format(X_train.shape[0]))
         failed += 1
     else:
-        print("✓ sample count unchanged (1151)")
+        print("✓ 863 training targets, disjoint from the 24-hour holdout")
 
     return failed
 
