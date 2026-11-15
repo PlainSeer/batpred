@@ -207,30 +207,30 @@ def run_test_web_if(my_predbat):
         # Test POST endpoints
         print("\n**** Testing POST endpoints ****")
 
-        components_response = requests.get(base_url + "/api/components")
+        components_response = http_get(base_url + "/api/components")
         components_data = components_response.json()
         component_ids = {component.get("id") for component in components_data.get("components", [])}
         if components_response.status_code != 200 or not {"db", "web"}.issubset(component_ids):
             print("ERROR: /api/components did not return registered component status")
             failed = 1
 
-        config_response = requests.get(base_url + "/api/config")
+        config_response = http_get(base_url + "/api/config")
         config_items = config_response.json().get("items", [])
         if config_response.status_code != 200 or not config_items or not all(item.get("entity") and item.get("description") for item in config_items):
             print("ERROR: /api/config did not return enabled configuration entities")
             failed = 1
 
-        browse_response = requests.get(base_url + "/api/browse")
+        browse_response = http_get(base_url + "/api/browse")
         browse_files = {item.get("name") for item in browse_response.json().get("files", [])}
         if browse_response.status_code != 200 or "apps.yaml" not in browse_files:
             print("ERROR: /api/browse did not return files from the Predbat working directory")
             failed = 1
-        if requests.get(base_url + "/api/browse", params={"path": "../"}).status_code != 403:
+        if http_get(base_url + "/api/browse", params={"path": "../"}).status_code != 403:
             print("ERROR: /api/browse allowed directory traversal")
             failed = 1
 
         my_predbat.set_state_wrapper("update.predbat_version", "on", attributes={"in_progress": True, "latest_version": "v99.0.0"})
-        update_status = requests.get(base_url + "/api/status").json()
+        update_status = http_get(base_url + "/api/status").json()
         if update_status.get("updating") is not True:
             print("ERROR: /api/status did not report an in-progress Predbat update")
             failed = 1
@@ -240,7 +240,7 @@ def run_test_web_if(my_predbat):
         my_predbat.set_state_wrapper("update.predbat_version", "on", attributes={"in_progress": False})
 
         print("Test apps.yaml editor API and generated schema")
-        schema_response = requests.get(base_url + "/api/apps_schema")
+        schema_response = http_get(base_url + "/api/apps_schema")
         schema = schema_response.json()
         app_schema = schema.get("$defs", {}).get("predbatApp", {})
         properties = app_schema.get("properties", {})
@@ -259,16 +259,16 @@ def run_test_web_if(my_predbat):
             print("ERROR: /api/apps_schema did not identify Home Assistant entity fields")
             failed = 1
 
-        yaml_response = requests.get(base_url + "/api/apps_yaml")
+        yaml_response = http_get(base_url + "/api/apps_yaml")
         yaml_data = yaml_response.json()
-        save_response = requests.post(base_url + "/api/apps_yaml", json=yaml_data)
+        save_response = http_post(base_url + "/api/apps_yaml", json=yaml_data)
         if yaml_response.status_code == 200 and save_response.status_code == 200 and save_response.json().get("saved"):
             accessed_endpoints.add(("POST", "/api/apps_yaml"))
         else:
             print("ERROR: /api/apps_yaml could not round-trip apps.yaml")
             failed = 1
 
-        stale_response = requests.post(base_url + "/api/apps_yaml", json={"content": yaml_data.get("content", ""), "checksum": "stale"})
+        stale_response = http_post(base_url + "/api/apps_yaml", json={"content": yaml_data.get("content", ""), "checksum": "stale"})
         if stale_response.status_code != 409:
             print("ERROR: /api/apps_yaml did not reject a stale editor save")
             failed = 1
@@ -321,7 +321,7 @@ def run_test_web_if(my_predbat):
             print("ERROR: Unexpected response from /config: {} - {}".format(res.status_code, res.text))
             failed = 1
 
-        res = requests.post(base_url + "/api/config", data=data)
+        res = http_post(base_url + "/api/config", data=data)
         if res.status_code in [200]:
             accessed_endpoints.add(("POST", "/api/config"))
         else:
