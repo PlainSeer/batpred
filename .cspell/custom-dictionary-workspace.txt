@@ -39,6 +39,8 @@ armv
 ASHP
 asn
 asname
+aspectmode
+aspectratio
 astimezone
 asyncio
 atfork
@@ -54,6 +56,7 @@ axisbelow
 axvline
 axvspan
 Backfeed
+backgroundcolor
 backprop
 Backpropagate
 backpropagation
@@ -106,6 +109,8 @@ chg
 Chrg
 citem
 cloudfront
+cmax
+cmin
 cmpl
 cobat
 codepoint
@@ -114,6 +119,8 @@ Codespaces
 COEFF
 collaps
 collapsable
+colorbar
+colorscale
 compareform
 configform
 connack
@@ -156,6 +163,7 @@ deadbanding
 deadbeefdeadbeef
 dedup
 dedupe
+deepseek
 dend
 denorm
 derate
@@ -187,6 +195,8 @@ dstart
 dtu
 dtype
 dwindow
+Dykstra
+Dykstra's
 eauth
 echargingpile
 ECONNRESET
@@ -302,6 +312,7 @@ GOELEC
 goldens
 gridcharge
 gridcode
+gridcolor
 gridconsumption
 gridconsumptionpower
 gridspec
@@ -335,9 +346,11 @@ heatsink
 holdout
 homeassistant
 houseb
+hovertemplate
 htmlcov
 hultenvp
 husforbrukning
+hvac
 hypervolt
 iboost
 idag
@@ -544,6 +557,7 @@ paho
 parseable
 partlycloudy
 pathlib
+pava
 pbat
 pbgw
 pcharging
@@ -669,6 +683,7 @@ sg05lp1
 sharex
 shiki
 shikijs
+showlegend
 SIGALRM
 sigcloud
 sigen
@@ -745,6 +760,7 @@ testname
 thirdparty
 threadpool
 threadpoolctl
+tickfont
 timea
 timeb
 timec
@@ -820,6 +836,7 @@ varh
 venv
 Victron
 VIEWBOX
+Viridis
 visibilitychange
 vvwwxxabcdefyyzzuu
 waf
@@ -861,6 +878,7 @@ yticks
 yuanzhi
 zappi
 zappis
+zaxis
 zcat
 zigbee
 zoneinfo
