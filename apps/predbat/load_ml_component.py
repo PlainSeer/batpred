@@ -753,7 +753,9 @@ class LoadMLComponent(ComponentBase):
 
         # Retrain if the model is older than the retrain interval (rather than on a fixed tick)
         retrain_age_seconds = (self.now_utc - self.last_train_time).total_seconds() if self.last_train_time else self.ml_retrain_interval_seconds
-        should_train = not first and (retrain_age_seconds >= self.ml_retrain_interval_seconds)
+        last_attempt = getattr(self, "last_training_attempt", None)
+        retry_due = not last_attempt or (datetime.now(timezone.utc) - last_attempt).total_seconds() >= self.ml_retrain_interval_seconds
+        should_train = not first and retry_due and (retrain_age_seconds >= self.ml_retrain_interval_seconds)
 
         # Fetch fresh load data periodically (every N minutes)
         should_fetch = first or should_train or ((seconds % PREDICTION_INTERVAL_SECONDS) == 0)
@@ -783,9 +785,14 @@ class LoadMLComponent(ComponentBase):
         if is_initial:
             if should_train:
                 self.log("ML Component: Starting initial training")
-            else:
+            elif first:
                 self.log("ML Component: Initial training is required, delaying until component has started")
+                # Fetching usable data completed successfully. The component manager
+                # needs this heartbeat while training waits for the next run.
+                self.update_success_timestamp()
                 return True
+            elif should_fetch:
+                self.log("ML Component: Waiting for the next initial-training retry")
         elif should_train:
             self.log("ML Component: Starting fine-tune training ({:g}h interval), model age is {} hours".format(self.ml_retrain_interval_seconds / 3600.0, retrain_age_seconds / 3600.0))
         elif should_fetch:
@@ -1116,8 +1123,22 @@ class LoadMLComponent(ComponentBase):
                     validation_holdout_hours=holdout_hours,
                 )
                 accepted, reason = self._accept_candidate(candidate, self.ml_validation_threshold, previous_rollout, previous_mae)
+                self.last_training_result = {
+                    "accepted": accepted,
+                    "reason": reason,
+                    "attempted": attempted.isoformat(),
+                    "epochs_trained": candidate.epochs_trained,
+                    **{
+                        name + "_kwh": round(float(value), 6) if value is not None and np.isfinite(value) else None
+                        for name, value in (("rollout_mae", candidate.rollout_mae), ("rollout_bias", candidate.rollout_bias), ("pattern_mae", candidate.pattern_mae), ("pattern_bias", candidate.pattern_bias))
+                    },
+                }
+                self.log(
+                    "Info: ML Component: Candidate {}: {} ({})".format(
+                        "accepted" if accepted else "rejected", self.last_training_result, "previous model retained" if self.predictor.model_initialized and not accepted else "standard forecast used" if not accepted else "model promoted"
+                    )
+                )
                 if not accepted:
-                    self.log("ML Component: Candidate rejected ({}); retaining the previous model".format(reason))
                     if not self.predictor.model_initialized:
                         self.model_valid = False
                         self.model_status = "fallback_validation"
@@ -1150,7 +1171,8 @@ class LoadMLComponent(ComponentBase):
         """Update model validity status based on current state."""
         if not self.predictor or not self.predictor.model_initialized:
             self.model_valid = False
-            self.model_status = "not_initialized"
+            result = getattr(self, "last_training_result", None)
+            self.model_status = "fallback_validation" if result and not result["accepted"] else "not_initialized"
             return
 
         is_valid, reason = self.predictor.is_valid(validation_threshold=self.ml_validation_threshold, max_age_hours=self.ml_max_model_age_hours)
@@ -1263,6 +1285,7 @@ class LoadMLComponent(ComponentBase):
                 "load_ml_source": self.ml_source,
                 "model_version": MODEL_VERSION,
                 "epochs_trained": self.predictor.epochs_trained if self.predictor else 0,
+                "last_training_result": getattr(self, "last_training_result", None),
                 "friendly_name": "ML Load Stats",
                 "state_class": "measurement",
                 "unit_of_measurement": "kWh",

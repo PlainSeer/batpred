@@ -7,14 +7,15 @@ import os
 import tempfile
 import threading
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 
 import numpy as np
 
 from load_ml_component import LoadMLComponent, RATE_HISTORY_VERSION
 from load_predictor import CHUNK_MINUTES, LOOKBACK_STEPS, MODEL_VERSION, LoadPredictor
+from components import Components
 from tests.test_load_ml_rollout import _collapsed_predictor, _spike_history
 
 
@@ -308,6 +309,84 @@ class LoadMLStabilityTests(unittest.TestCase):
         self.assertFalse(component.model_valid)
         self.assertFalse(component.initial_training_done)
         self.assertEqual(component.model_status, "fallback_validation")
+
+    def test_startup_data_fetch_records_component_health(self):
+        """Successful cold fetches are alive before training; failed fetches stay unhealthy."""
+        for fails in (False, True):
+            with self.subTest(fails=fails):
+                component = self._training_component(initialized=False)
+                component.ml_enable = component.data_ready = component.database_history_loaded = True
+                component.load_ml_database_days = 0
+                component.ml_min_days = 3
+                component.api_started = True  # The component runner sets this after a truthy run.
+                manager = Components.__new__(Components)
+                manager.components = {"load_ml": component}
+                manager.component_tasks = {"load_ml": SimpleNamespace(is_alive=lambda: True)}
+                self.assertFalse(manager.is_alive("load_ml"))
+                with patch.object(component, "_do_fetch", new_callable=AsyncMock, side_effect=RuntimeError("fetch failed") if fails else None), patch.object(component, "_do_training", new_callable=AsyncMock) as train:
+                    if fails:
+                        with self.assertRaises(RuntimeError):
+                            asyncio.run(component.run(0, True))
+                    else:
+                        self.assertTrue(asyncio.run(component.run(0, True)))
+                    train.assert_not_called()
+                self.assertEqual(manager.is_alive("load_ml"), not fails)
+                self.assertFalse(component.model_valid)
+
+    def test_rejected_initial_status_and_metrics_survive_publication(self):
+        """A cold rejection retains its reason and finite candidate evidence for HA."""
+        component = self._training_component(initialized=False)
+
+        def train(candidate, *args, **kwargs):
+            """Report a completed candidate that fails the baseline check."""
+            candidate.model_initialized = True
+            candidate.validation_mae = 0.01
+            candidate.epochs_trained = 100
+            return 0.01
+
+        with patch.object(LoadPredictor, "train_curriculum", train), patch.object(LoadPredictor, "_ar_rollout_diagnostic", return_value=(float("nan"), 0.0, 0.03)):
+            asyncio.run(component._do_training(True))
+        component._update_model_status()
+        self.assertEqual(component.model_status, "fallback_validation")
+        self.assertEqual(component.last_training_result["epochs_trained"], 100)
+        self.assertFalse(component.last_training_result["accepted"])
+        self.assertIsNone(component.last_training_result["rollout_mae_kwh"])
+        json.dumps(component.last_training_result, allow_nan=False)
+        self.assertTrue(any(message.startswith("Info: ML Component: Candidate rejected") for message in component.log.messages))
+
+        component.base.midnight_utc = self.now.replace(hour=0, minute=0)
+        component.base.minutes_now = 800
+        component.base.prefix = "predbat"
+        component.prefix = "predbat"
+        component.current_predictions = {}
+        component.load_minutes_now = 0.0
+        component.load_minutes_now_time = self.now
+        component.ml_source = False
+        published = {}
+        with patch.object(component, "dashboard_item", lambda entity, **kwargs: published.update({entity: kwargs["attributes"]})):
+            component._publish_entity()
+        self.assertEqual(published["sensor.predbat_load_ml_stats"]["last_training_result"], component.last_training_result)
+
+    def test_retry_wait_does_not_claim_training_started(self):
+        """The loop publishes fallback while waiting, then really trains when retry is due."""
+        component = self._training_component(initialized=False)
+        component.base.prediction_started = False
+        component.base.midnight_utc = self.now.replace(hour=0, minute=0)
+        component.ml_enable = component.data_ready = component.database_history_loaded = True
+        component.load_ml_database_days = 0
+        component.ml_min_days = 3
+        component.last_data_fetch = self.now
+        component.last_training_attempt = datetime.now(timezone.utc)
+        component.last_training_result = {"accepted": False, "reason": "baseline better"}
+        with patch.object(component, "_do_fetch", new_callable=AsyncMock), patch.object(component, "_do_training", new_callable=AsyncMock) as train, patch.object(component, "_get_predictions"), patch.object(component, "_publish_entity") as publish:
+            asyncio.run(component.run(0, False))
+            train.assert_not_called()
+            publish.assert_called_once()
+            self.assertFalse(any("Starting initial training" in message or "Doing training" in message for message in component.log.messages))
+            self.assertEqual(component.model_status, "fallback_validation")
+            component.last_training_attempt -= timedelta(seconds=7201)
+            asyncio.run(component.run(0, False))
+            train.assert_awaited_once_with(True)
 
 
 def run_load_ml_stability_tests(my_predbat=None):

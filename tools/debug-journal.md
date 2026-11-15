@@ -1,5 +1,14 @@
 # Debug journal
 
+- LoadML startup health (2026-11-15): the successful first data fetch returned
+  before `update_success_timestamp()`. The manager requires both `api_started`
+  and a recent success, so the next plan could report a component error while ML
+  waited for training. Record success on that first usable-data path; do not mark
+  a failed fetch healthy. Cold candidate rejection also lost `fallback_validation`
+  in `_update_model_status()`, and retry throttling occurred after "Starting"
+  messages. Keep rejected-candidate evidence separate from the published model.
+  Tests: `test_load_ml_stability.py` (startup health, rejection status, retry wait).
+
 - LoadML fork investigation (GH#6208, 2026-11-15): `minute_data()` pads published
   tariff attributes before their first timestamp; crop that padding before merging
   recorder history, and invalidate only legacy cached rate channels. A disjoint
