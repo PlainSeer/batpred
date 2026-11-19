@@ -2128,6 +2128,11 @@ disable recording, or `auto` to allow a temporary fallback to the classic foreca
 
 `sensor.predbat_load_ml_accuracy` shows the selected source, reason, recommended source,
 and seven-day energy MAE and signed bias for one-hour, eight-hour and 24-hour windows.
+For an everyday view, open **Charts → LoadML** or **Charts → LoadMLPower** in PredBat.
+An accuracy summary above the graph shows the mode, planning source, warning or fallback
+status, and a table comparing ML and historical errors. Empty windows show that results
+are still pending; a real zero error is displayed as zero. The page refreshes with the
+existing chart refresh and flags reports more than 15 minutes old.
 Positive bias means the forecast was higher than actual load. Snapshots are taken at most once per hour and frozen;
 later retraining cannot rewrite them. Scores cover energy consumed after each snapshot,
 rather than cumulative daily totals that include already measured consumption. Overlapping

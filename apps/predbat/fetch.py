@@ -4579,6 +4579,7 @@ class Fetch:
             state="fallback" if requested and not use_ml else reason,
             attributes={
                 "friendly_name": "Load Forecast Accuracy",
+                "updated_at": self.now_utc.isoformat(),
                 "icon": "mdi:chart-line",
                 "mode": mode,
                 "selected_source": selected,
