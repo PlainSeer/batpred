@@ -1338,6 +1338,15 @@ CONFIG_ITEMS = [
         "reset_inverter_force": True,
     },
     {
+        "name": "load_ml_guard_mode",
+        "friendly_name": "LoadML forecast guard mode",
+        "type": "select",
+        "options": ["off", "monitor", "auto"],
+        "option_labels": {"off": "Off", "monitor": "Monitoring only", "auto": "Automatic fallback"},
+        "icon": "mdi:shield-check",
+        "default": "monitor",
+    },
+    {
         "name": "update",
         "friendly_name": "Predbat update",
         "type": "select",

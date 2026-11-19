@@ -3030,8 +3030,18 @@ chart.render();
         """
         postdata = await request.post()
 
+        guard_entity = "select." + self.prefix + "_load_ml_guard_mode"
+        guard_submitted = False
+        for field in postdata:
+            if field.replace("__", ".") == guard_entity:
+                if postdata[field] not in ("off", "monitor", "auto"):
+                    raise web.HTTPBadRequest(text="Choose Off, Monitoring only or Automatic fallback")
+                guard_submitted = True
+
         # Process only the submitted form data
         for pitem in postdata:
+            if pitem == "_load_ml_guard_return_chart":
+                continue
             new_value = postdata[pitem]
             if pitem:
                 pitem = pitem.replace("__", ".")
@@ -3048,6 +3058,13 @@ chart.render();
             self.log("Web interface setting {} to {}".format(pitem, new_value))
             await self.set_state_external(pitem, new_value)
 
+        if guard_submitted:
+            # Use the normal persisted Config setting, so the choice survives an
+            # immediate restart and an old apps.yaml default does not pin it back.
+            self.base.save_current_config()
+            return_chart = postdata.get("_load_ml_guard_return_chart")
+            if return_chart in ("LoadML", "LoadMLPower"):
+                raise web.HTTPFound("./charts?chart=" + return_chart)
         raise web.HTTPFound("./config")
 
     def render_delete_button(self, nested_row_id):
@@ -3975,7 +3992,7 @@ chart.render();
 
         return text
 
-    def get_load_ml_accuracy_html(self):
+    def get_load_ml_accuracy_html(self, chart="LoadML"):
         """Readable accuracy status and prospective error scores above the LoadML charts."""
         mode = self.base.get_arg("load_ml_guard_mode", "monitor")
         mode = mode if mode in ("off", "monitor", "auto") else "monitor"
@@ -4049,6 +4066,10 @@ chart.render();
 .load-accuracy .la-cards {display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:16px 0;}
 .load-accuracy .la-card {padding:12px;background:#fff;border:1px solid #dbe2ea;border-radius:8px;}
 .load-accuracy .la-label {display:block;font-size:13px;color:#475569;margin-bottom:5px;}
+.load-accuracy .la-mode-form {display:flex;flex-wrap:wrap;gap:8px;align-items:center;}
+.load-accuracy select,.load-accuracy button {font:inherit;font-size:14px;padding:6px 8px;border:1px solid #94a3b8;border-radius:5px;}
+.load-accuracy select {background:#fff;color:#172033;max-width:100%;}
+.load-accuracy button {background:#dbeafe;color:#164178;cursor:pointer;}
 .load-accuracy .la-table {overflow-x:auto;}
 .load-accuracy table {width:100%;border:0;padding:0;border-collapse:collapse;text-align:left;}
 .load-accuracy th,.load-accuracy td {padding:10px 12px;border-bottom:1px solid #dbe2ea;white-space:normal;}
@@ -4058,6 +4079,7 @@ chart.render();
 .load-accuracy .la-best {font-weight:bold;color:#166534;}
 body.dark-mode .load-accuracy {background:#1e293b;border-color:#475569;color:#f1f5f9;}
 body.dark-mode .load-accuracy .la-card {background:#263449;border-color:#475569;}
+body.dark-mode .load-accuracy select {background:#1e293b;color:#f1f5f9;}
 body.dark-mode .load-accuracy .la-label,body.dark-mode .load-accuracy small {color:#cbd5e1;}
 body.dark-mode .load-accuracy th,body.dark-mode .load-accuracy td {border-color:#475569;}
 body.dark-mode .load-accuracy th {background:transparent;color:inherit;}
@@ -4069,6 +4091,15 @@ body.dark-mode .load-accuracy .la-best {color:#86efac;}
         text += '<div class="la-status la-{}" role="status">{}</div><p>{}</p>'.format(tone, html_module.escape(headline), html_module.escape(explanation))
         text += '<div class="la-cards">'
         for label, value in (("Mode", {"off": "Off", "monitor": "Monitoring only", "auto": "Automatic fallback"}[mode]), ("Planning source (last report)" if stale else "Planning source", source), ("Guard recommendation", recommendation)):
+            if label == "Mode":
+                field = html_module.escape("select__" + self.prefix + "_load_ml_guard_mode", quote=True)
+                return_chart = chart if chart in ("LoadML", "LoadMLPower") else "LoadML"
+                text += '<div class="la-card"><label class="la-label" for="load-ml-guard-mode">Mode</label><form class="la-mode-form" method="post" action="./config">'
+                text += '<input type="hidden" name="_load_ml_guard_return_chart" value="{}"><select id="load-ml-guard-mode" name="{}">'.format(return_chart, field)
+                for option, title in (("off", "Off"), ("monitor", "Monitoring only"), ("auto", "Automatic fallback")):
+                    text += '<option value="{}"{}>{}</option>'.format(option, " selected" if option == mode else "", title)
+                text += '</select><button type="submit">Apply mode</button></form><small>Saved immediately; no restart needed. Guard mode does not enable ML for planning.</small></div>'
+                continue
             text += '<div class="la-card"><span class="la-label">{}</span><strong>{}</strong></div>'.format(html_module.escape(label), html_module.escape(value))
         text += '</div><p>Average energy error over the past seven days. Lower is better.</p><div class="la-table"><table><thead><tr><th scope="col">Forecast window</th><th scope="col">LoadML error</th><th scope="col">Historical error</th><th scope="col">Closer forecast</th></tr></thead><tbody>'
         for horizon in (1, 8, 24):
@@ -4119,7 +4150,7 @@ body.dark-mode .load-accuracy .la-best {color:#86efac;}
         text += "</div>"
 
         if chart in ("LoadML", "LoadMLPower"):
-            text += self.get_load_ml_accuracy_html()
+            text += self.get_load_ml_accuracy_html(chart)
         if chart not in ("MarginalCosts", "Curves", "PVCalibration", "PVAccuracy"):
             text += '<div id="chart"></div>'
         text += self.get_chart(chart=chart)
@@ -4996,8 +5027,8 @@ body.dark-mode .load-accuracy .la-best {color:#86efac;}
                     text += '<select name="{}" id="{}" onchange="saveFilterValue(); this.form.submit();">'.format(useid, useid)
                     for option in options:
                         selected = option == value
-                        option_label = option if option else "None"
-                        text += '<option value="{}" label="{}" {}>{}</option>'.format(option, option_label, "selected" if selected else "", option)
+                        option_label = item.get("option_labels", {}).get(str(option), option if option else "None")
+                        text += '<option value="{}" label="{}" {}>{}</option>'.format(option, option_label, "selected" if selected else "", option_label)
                     text += "</select>\n"
                     text += f"</form></td>\n"
                 else:

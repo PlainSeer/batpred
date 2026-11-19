@@ -2126,6 +2126,18 @@ household-load forecasts before consumption occurs. It works with `load_ml_sourc
 as well as true. Monitoring does not veto a valid ML forecast. Set the mode to `off` to
 disable recording, or `auto` to allow a temporary fallback to the classic forecast.
 
+Change the mode directly in the accuracy panel on **Charts → LoadML / LoadMLPower**
+using **Apply mode**, or use **Config → LoadML forecast guard mode**. Both controls
+use the same saved select (`select.predbat_load_ml_guard_mode`, with your own prefix).
+Choices are **Off**, **Monitoring only**, and **Automatic fallback**. Changes are saved
+immediately and request a new plan without restarting PredBat. They do not change
+`load_ml_source`, the separate choice of whether ML may supply battery planning.
+
+An existing `load_ml_guard_mode` line in apps.yaml becomes the initial default for the
+new select. Your saved UI choice takes precedence on later refreshes and restarts, so
+the line can be left in place or removed after updating. No YAML edit is needed for
+subsequent mode changes.
+
 `sensor.predbat_load_ml_accuracy` shows the selected source, reason, recommended source,
 and seven-day energy MAE and signed bias for one-hour, eight-hour and 24-hour windows.
 For an everyday view, open **Charts → LoadML** or **Charts → LoadMLPower** in PredBat.
@@ -2154,7 +2166,7 @@ an available, valid ML forecast with empty data.
 Optional settings in the main Predbat `apps.yaml` section:
 
 ```yaml
-load_ml_guard_mode: monitor  # off | monitor | auto
+load_ml_guard_mode: monitor  # optional initial default; normally use the chart/Config selector
 load_ml_guard_min_days: 3    # 2-5 independent daily windows for fallback and recovery
 load_ml_guard_error_kwh: 3.0
 load_ml_guard_error_percent: 40.0
