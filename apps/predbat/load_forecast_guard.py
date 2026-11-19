@@ -9,7 +9,7 @@ import math
 
 HORIZONS = (60, 480, 1440)
 RETENTION_MINUTES = 7 * 1440
-STORE_VERSION = 1
+STORE_VERSION = 2
 
 
 def valid_energy(value):
@@ -37,8 +37,10 @@ class LoadForecastGuard:
         """Start empty; the fingerprint prevents comparing incompatible load definitions."""
         self.fingerprint = fingerprint
         self.records = []
-        self.fallback = False
+        # Automatic planning starts on classic; a valid model alone earns no permission.
+        self.fallback = True
         self.trigger_horizon = None
+        self.blocked_since = None
         self.last_capture = None
         self.last_now = None
         self.last_message = None
@@ -49,7 +51,7 @@ class LoadForecastGuard:
 
     def restore(self, data, now):
         """Restore compatible, bounded evidence; malformed records never authorise ML."""
-        if not isinstance(data, dict) or data.get("version") != STORE_VERSION or data.get("fingerprint") != self.fingerprint:
+        if not isinstance(data, dict) or data.get("version") not in (1, STORE_VERSION) or data.get("fingerprint") != self.fingerprint:
             return
         records = data.get("records")
         if not isinstance(records, list):
@@ -71,13 +73,25 @@ class LoadForecastGuard:
         for record in self.records:
             cleaned[(record["start"], record["duration"])] = record
         self.records = sorted(cleaned.values(), key=lambda r: (r["start"], r["duration"]))[-600:]
-        self.fallback = data.get("fallback") is True
+        # Version 1 allowed ML before evidence existed. Keep its observations,
+        # but never migrate that implicit permission into the new policy.
+        self.fallback = not (data.get("version") == STORE_VERSION and data.get("fallback") is False)
         self.trigger_horizon = data.get("trigger_horizon") if data.get("trigger_horizon") in (480, 1440) else None
+        blocked_since = data.get("blocked_since")
+        self.blocked_since = blocked_since if type(blocked_since) is int and blocked_since <= now else None
         self.last_capture = max((r["start"] // 60 for r in self.records), default=None)
 
     def serialise(self):
         """Return JSON-safe evidence for the Storage component, separate from ML files."""
-        return {"version": STORE_VERSION, "fingerprint": self.fingerprint, "records": self.records, "fallback": self.fallback, "trigger_horizon": self.trigger_horizon}
+        return {"version": STORE_VERSION, "fingerprint": self.fingerprint, "records": self.records, "fallback": self.fallback, "trigger_horizon": self.trigger_horizon, "blocked_since": self.blocked_since}
+
+    def require_new_evidence(self, now):
+        """Withdraw permission; forecasts issued before this event cannot earn it back."""
+        if not self.fallback or self.blocked_since is None or self.blocked_since > now:
+            self.blocked_since = now
+            self.dirty = True
+        self.dirty |= not self.fallback
+        self.fallback = True
 
     def advance(self, now, actual_reader):
         """Score newly elapsed windows once, leaving missing actuals unscored."""
@@ -85,6 +99,7 @@ class LoadForecastGuard:
             # A backwards clock jump must not leave future evidence or a capture lock.
             self.records = [r for r in self.records if r["start"] <= now and (r["actual"] is None or r["start"] + r["duration"] <= now)]
             self.last_capture = None
+            self.require_new_evidence(now)
         self.last_now = now
         kept = [r for r in self.records if now - RETENTION_MINUTES <= r["start"] <= now]
         self.dirty |= len(kept) != len(self.records)
@@ -128,8 +143,9 @@ class LoadForecastGuard:
         return scores
 
     def judge(self, now, min_days=3, threshold_kwh=3.0, threshold_percent=40.0):
-        """Judge eight-hour shape and daily energy on windows issued at least a day apart."""
+        """Earn ML selection on both horizons; retain classic until clear daily wins exist."""
         decisions = {}
+        qualifying = {}
         for duration in (480, 1440):
             daily = []
             for record in sorted(self.records, key=lambda r: r["start"], reverse=True):
@@ -144,20 +160,31 @@ class LoadForecastGuard:
             recent = len(daily) >= min_days and now - (daily[0]["start"] + duration) <= 180 and daily[0]["start"] - daily[-1]["start"] <= min_days * 1440
             if not recent:
                 continue
-            bad, good = [], []
+            bad, wins = [], []
             scale = duration / 1440
             for row in daily:
                 ml_error, classic_error = abs(row["ml"] - row["actual"]), abs(row["classic"] - row["actual"])
-                bad.append(ml_error > threshold_kwh * scale and ml_error > row["actual"] * threshold_percent / 100 and ml_error > classic_error * 1.25 + 0.25 * scale)
-                good.append(ml_error <= classic_error + 0.25 * scale and (ml_error <= threshold_kwh * scale or ml_error <= row["actual"] * threshold_percent / 100))
-            decisions[duration] = "bad" if all(bad) else "good" if all(good) else "mixed"
+                bad.append(ml_error > classic_error * 1.10 + 0.25 * scale)
+                within_limits = ml_error <= threshold_kwh * scale or ml_error <= row["actual"] * threshold_percent / 100
+                fresh = self.blocked_since is None or row["start"] >= self.blocked_since
+                wins.append(fresh and within_limits and ml_error <= classic_error * 0.80 and classic_error - ml_error >= 0.25 * scale)
+            decisions[duration] = "bad" if all(bad) else "mixed"
+            qualifying[duration] = all(wins)
         previous = (self.fallback, self.trigger_horizon)
         failing = [duration for duration, decision in decisions.items() if decision == "bad"]
         if failing:
-            self.fallback = True
+            self.require_new_evidence(now)
             self.trigger_horizon = min(failing)
-        elif self.fallback and decisions.get(self.trigger_horizon or 1440) == "good" and all(value == "good" for value in decisions.values()):
+        elif len(decisions) < 2:
+            # An outage or missing comparisons cannot leave an earned grant in force.
+            if not self.fallback:
+                self.require_new_evidence(now)
+                self.trigger_horizon = None
+        elif self.fallback and all(qualifying.values()):
             self.fallback = False
             self.trigger_horizon = None
+            self.blocked_since = None
         self.dirty |= previous != (self.fallback, self.trigger_horizon)
-        return "ml_worse_than_classic" if self.fallback else "measuring" if not decisions else "within_limits"
+        if not self.fallback:
+            return "ml_earned"
+        return "ml_worse_than_classic" if self.trigger_horizon else "measuring" if len(decisions) < 2 else "historical_preferred"

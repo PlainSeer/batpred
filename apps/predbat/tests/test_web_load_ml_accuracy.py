@@ -42,6 +42,23 @@ def sample_attributes(reason="within_limits", selected="classic"):
 class WebLoadMLAccuracyTests(unittest.TestCase):
     """Status, warnings, empty states and correct placement on existing chart pages."""
 
+    def test_automatic_initial_state_explains_historical_first(self):
+        """Collecting evidence must not imply that Automatic is already using ML."""
+        html = accuracy_web(sample_attributes("measuring"), mode="auto").get_load_ml_accuracy_html()
+        self.assertIn("Automatic mode starts with historical", html)
+        self.assertIn("only permits LoadML after it earns selection", html)
+        self.assertIn("Collecting evidence", html)
+        self.assertIn('<span class="la-label">Planning source</span><strong>Historical forecast</strong>', html)
+
+    def test_qualification_and_historical_preference_are_explicit(self):
+        """The page distinguishes a clear earned advantage from insufficient improvement."""
+        html = accuracy_web(sample_attributes("historical_preferred"), mode="auto").get_load_ml_accuracy_html()
+        self.assertIn("Historical preferred", html)
+        self.assertIn("both the 8-hour and 24-hour checks", html)
+        html = accuracy_web(sample_attributes("ml_earned", "ml"), mode="auto").get_load_ml_accuracy_html()
+        self.assertIn("LoadML earned selection", html)
+        self.assertIn('<span class="la-label">Planning source</span><strong>LoadML</strong>', html)
+
     def test_both_loadml_pages_show_summary_above_chart(self):
         """The real route renders the summary before the chart placeholder on both ML tabs."""
         web = accuracy_web(sample_attributes())

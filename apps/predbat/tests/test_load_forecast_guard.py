@@ -108,6 +108,11 @@ def daily_evidence(now, count=3, ml=40, classic=20, actual=20):
     return [{"start": now - (i + 1) * 1440, "duration": 1440, "ml": ml, "classic": classic, "actual": actual} for i in range(count)]
 
 
+def paired_evidence(now, count=3, ml=20, classic=24, actual=20):
+    """Completed independent observations for both horizons, with the same daily energy rates."""
+    return [{"start": now - duration - day * 1440, "duration": duration, "ml": ml * duration / 1440, "classic": classic * duration / 1440, "actual": actual * duration / 1440} for duration in (480, 1440) for day in range(count)]
+
+
 class LoadForecastGuardTests(unittest.TestCase):
     """Exercise meaningful guard decisions and production Fetch integration."""
 
@@ -156,14 +161,18 @@ class LoadForecastGuardTests(unittest.TestCase):
         now = 100000
         guard.records = daily_evidence(now, 2)
         self.assertEqual(guard.judge(now), "measuring")
-        self.assertFalse(guard.fallback)
+        self.assertTrue(guard.fallback)
         guard.records = daily_evidence(now)
         self.assertEqual(guard.judge(now), "ml_worse_than_classic")
         guard.records[0]["ml"] = 20
         guard.judge(now)
         self.assertTrue(guard.fallback)
         guard.records = daily_evidence(now, ml=20)
-        self.assertEqual(guard.judge(now), "within_limits")
+        guard.judge(now)
+        self.assertTrue(guard.fallback)
+        now += 4 * 1440
+        guard.records = paired_evidence(now)
+        self.assertEqual(guard.judge(now), "ml_earned")
         self.assertFalse(guard.fallback)
 
     def test_overlap_and_stale_evidence_do_not_authorise_switches(self):
@@ -172,21 +181,21 @@ class LoadForecastGuardTests(unittest.TestCase):
         now = 100000
         guard.records = [{**daily_evidence(now, 1)[0], "start": now - 1440 - i * 60} for i in range(20)]
         guard.judge(now)
-        self.assertFalse(guard.fallback)
+        self.assertTrue(guard.fallback)
         guard.fallback = True
         guard.records = daily_evidence(now - 1440, ml=20)
         guard.judge(now)
         self.assertTrue(guard.fallback)
 
     def test_relative_errors_and_classic_comparison(self):
-        """A large error alone cannot veto ML when classic is even worse."""
+        """A large error alone cannot condemn ML, but one horizon cannot authorise it."""
         guard = LoadForecastGuard("house")
         guard.records = daily_evidence(100000, ml=40, classic=50)
-        guard.judge(100000)
-        self.assertFalse(guard.fallback)
+        self.assertEqual(guard.judge(100000), "measuring")
+        self.assertIsNone(guard.trigger_horizon)
         guard.records = daily_evidence(100000, ml=22, classic=20)
         guard.judge(100000)
-        self.assertFalse(guard.fallback)
+        self.assertTrue(guard.fallback)
 
     def test_restore_retention_and_clock_changes(self):
         """Restart preserves the latch and observations; incompatible or future data is excluded."""
@@ -335,10 +344,10 @@ class LoadForecastGuardTests(unittest.TestCase):
         for hour in range(8 * 24 + 1):
             now = origin + hour * 60
             guard.advance(now, lambda start, duration: duration * 20 / 1440)
-            guard.capture(now, 0, curve((40 if hour < 3 * 24 else 20) / 1440), curve(20 / 1440))
+            guard.capture(now, 0, curve((40 if hour < 3 * 24 else 20) / 1440), curve(24 / 1440))
             guard.judge(now)
             history.append(guard.fallback)
-        self.assertFalse(any(history[: 2 * 24 + 8]))
+        self.assertTrue(all(history[: 2 * 24 + 8]))
         self.assertTrue(history[3 * 24])
         self.assertTrue(history[4 * 24])
         self.assertFalse(history[-1])
@@ -359,7 +368,202 @@ class LoadForecastGuardTests(unittest.TestCase):
         self.assertTrue(guard.fallback)
         guard.records += [{"start": now - 480 - day * 1440, "duration": 480, "ml": 5, "classic": 5, "actual": 5} for day in range(3)]
         guard.judge(now)
+        self.assertTrue(guard.fallback)
+        now += 4 * 1440
+        guard.records = paired_evidence(now)
+        guard.judge(now)
         self.assertFalse(guard.fallback)
+
+    def test_auto_starts_historical_and_forces_first_plan(self):
+        """A healthy model and an enabled source do not bypass the initial evidence gate."""
+        base = GuardBase()
+        base.args["load_ml_guard_mode"] = "auto"
+        use_ml, changed = base.update_load_forecast_guard(curve(0.02), curve(0.01))
+        self.assertFalse(use_ml)
+        self.assertTrue(changed)
+        self.assertEqual(base.load_forecast_guard_selected, "classic")
+        attrs = base.dashboard["sensor.predbat_load_ml_accuracy"]["attributes"]
+        self.assertEqual(attrs["reason"], "measuring")
+        self.assertEqual(attrs["recommended_source"], "classic")
+
+    def test_clear_wins_on_both_horizons_earn_ml_and_replan(self):
+        """Prospective wins collected in monitoring can qualify when Automatic is selected."""
+        base = GuardBase()
+        base.args["load_ml_source"] = False
+        ml, classic = curve(20 / 1440), curve(24 / 1440)
+        base.update_load_forecast_guard(ml, classic)
+        now = int(base.now_utc.timestamp() // 60)
+        base.load_forecast_guard.records = paired_evidence(now)
+        base.update_load_forecast_guard(ml, classic)
+        self.assertFalse(base.load_forecast_guard.fallback)
+        self.assertEqual(base.load_forecast_guard_selected, "classic")
+        base.args.update(load_ml_source=True, load_ml_guard_mode="auto")
+        use_ml, changed = base.update_load_forecast_guard(ml, classic)
+        self.assertTrue(use_ml)
+        self.assertTrue(changed)
+        self.assertEqual(base.load_forecast_guard_selected, "ml")
+        self.assertEqual(base.dashboard["sensor.predbat_load_ml_accuracy"]["attributes"]["reason"], "ml_earned")
+
+    def test_one_day_ties_and_small_advantages_stay_historical(self):
+        """One completed day, a tie or an insignificant improvement cannot qualify ML."""
+        now = 100000
+        for rows in (paired_evidence(now, count=1), paired_evidence(now, classic=20), paired_evidence(now, ml=23.5), paired_evidence(now, ml=20.1, classic=20.2)):
+            guard = LoadForecastGuard("house")
+            guard.records = rows
+            guard.judge(now)
+            self.assertTrue(guard.fallback)
+
+    def test_daily_wins_cannot_hide_poor_eight_hour_shape(self):
+        """Both daily energy and eight-hour timing must earn selection."""
+        guard = LoadForecastGuard("house")
+        now = 100000
+        guard.records = paired_evidence(now)
+        for row in guard.records:
+            if row["duration"] == 480:
+                row["ml"] = row["classic"]
+        self.assertEqual(guard.judge(now), "historical_preferred")
+        self.assertTrue(guard.fallback)
+
+    def test_moderate_deterioration_revokes_and_requires_fresh_wins(self):
+        """Repeated relative losses revoke ML even below the old severe-error threshold."""
+        guard = LoadForecastGuard("house")
+        now = 100000
+        guard.records = paired_evidence(now)
+        guard.judge(now)
+        self.assertFalse(guard.fallback)
+        bad_now = now + 4 * 1440
+        guard.records = paired_evidence(bad_now, ml=22, classic=21)
+        self.assertEqual(guard.judge(bad_now), "ml_worse_than_classic")
+        self.assertTrue(guard.fallback)
+        self.assertEqual(guard.blocked_since, bad_now)
+        # Reusing earlier successes, even with fresh completion times, is insufficient.
+        guard.records = paired_evidence(bad_now)
+        guard.judge(bad_now)
+        self.assertTrue(guard.fallback)
+        recovery = bad_now + 3 * 1440
+        guard.records = paired_evidence(recovery)
+        self.assertEqual(guard.judge(recovery), "ml_earned")
+        self.assertFalse(guard.fallback)
+
+    def test_similar_performance_does_not_chatter_after_qualification(self):
+        """One bad day or a later tie does not undo a sustained earned advantage."""
+        guard = LoadForecastGuard("house")
+        now = 100000
+        guard.records = paired_evidence(now)
+        guard.judge(now)
+        guard.records = paired_evidence(now, ml=22, classic=22)
+        self.assertEqual(guard.judge(now), "ml_earned")
+        guard.records[0]["ml"] = 30
+        self.assertEqual(guard.judge(now), "ml_earned")
+
+    def test_stale_or_incomplete_comparisons_withdraw_earned_selection(self):
+        """Permission expires after an outage and cannot be revived with pre-outage wins."""
+        now = 100000
+        for delta, missing in ((181, False), (0, True)):
+            guard = LoadForecastGuard("house")
+            guard.records = paired_evidence(now)
+            guard.judge(now)
+            self.assertFalse(guard.fallback)
+            if missing:
+                guard.records = [r for r in guard.records if r["duration"] == 1440]
+            guard.judge(now + delta)
+            self.assertTrue(guard.fallback)
+            guard.records = paired_evidence(now + delta)
+            guard.judge(now + delta)
+            self.assertTrue(guard.fallback)
+
+    def test_upgrade_preserves_observations_without_inheriting_old_permission(self):
+        """Version 1's implicit ML preference is not an earned grant; strong evidence still counts."""
+        now = 100000
+        old = {"version": 1, "fingerprint": "house", "fallback": False, "records": daily_evidence(now, ml=20)}
+        guard = LoadForecastGuard("house")
+        guard.restore(old, now)
+        self.assertEqual(len(guard.records), 3)
+        self.assertTrue(guard.fallback)
+        guard.judge(now)
+        self.assertTrue(guard.fallback)
+        old["records"] = paired_evidence(now)
+        guard = LoadForecastGuard("house")
+        guard.restore(old, now)
+        self.assertEqual(guard.judge(now), "ml_earned")
+
+    def test_earned_restart_and_recovery_boundary_survive_storage(self):
+        """Restart preserves earned permission only with fresh evidence, and preserves recovery bounds."""
+        now = 100000
+        guard = LoadForecastGuard("house")
+        guard.records = paired_evidence(now)
+        guard.judge(now)
+        restored = LoadForecastGuard("house")
+        restored.restore(guard.serialise(), now)
+        self.assertEqual(restored.judge(now), "ml_earned")
+        restored.require_new_evidence(now)
+        restarted = LoadForecastGuard("house")
+        restarted.restore(restored.serialise(), now)
+        self.assertEqual(restarted.blocked_since, now)
+        self.assertTrue(restarted.fallback)
+        self.assertNotEqual(restarted.judge(now), "ml_earned")
+
+    def test_unavailable_model_revokes_permission_and_replans(self):
+        """Leftover earned evidence cannot immediately re-enable a model that became unavailable."""
+        base = GuardBase()
+        base.args["load_ml_guard_mode"] = "auto"
+        ml, classic = curve(20 / 1440), curve(24 / 1440)
+        base.update_load_forecast_guard(ml, classic)
+        now = int(base.now_utc.timestamp() // 60)
+        base.load_forecast_guard.records = paired_evidence(now)
+        self.assertTrue(base.update_load_forecast_guard(ml, classic)[0])
+        use_ml, changed = base.update_load_forecast_guard({}, classic)
+        self.assertFalse(use_ml)
+        self.assertTrue(changed)
+        self.assertTrue(base.load_forecast_guard.fallback)
+        self.assertFalse(base.update_load_forecast_guard(ml, classic)[0])
+
+    def test_clock_rollback_cannot_retain_earned_permission(self):
+        """A backwards clock jump removes future observations and restarts qualification."""
+        guard = LoadForecastGuard("house")
+        now = 100000
+        guard.records = paired_evidence(now)
+        guard.judge(now)
+        guard.advance(now, lambda *args: None)
+        guard.advance(now - 60, lambda *args: None)
+        self.assertTrue(guard.fallback)
+        self.assertEqual(guard.blocked_since, now - 60)
+
+    def test_overlapping_successes_cannot_earn_selection(self):
+        """Many excellent overlapping windows still represent less than three independent days."""
+        guard = LoadForecastGuard("house")
+        now = 100000
+        guard.records = [{**row, "start": now - row["duration"] - hour * 60} for row in paired_evidence(now, count=1) for hour in range(24)]
+        self.assertEqual(guard.judge(now), "measuring")
+        self.assertTrue(guard.fallback)
+
+    def test_chronological_qualification_failure_restart_and_recovery(self):
+        """Replay actual future energy through all source states, including a restart during fallback."""
+        guard = LoadForecastGuard("house")
+        origin = 100000
+        history = []
+        for hour in range(14 * 24 + 1):
+            now = origin + hour * 60
+            guard.advance(now, lambda start, duration: duration * 20 / 1440)
+            rate = 40 if 4 * 24 <= hour < 7 * 24 else 20
+            guard.capture(now, 0, curve(rate / 1440), curve(24 / 1440))
+            guard.judge(now)
+            history.append(guard.fallback)
+            if hour == 8 * 24:
+                saved = guard.serialise()
+                guard = LoadForecastGuard("house")
+                guard.restore(saved, now)
+                guard.judge(now)
+                self.assertTrue(guard.fallback)
+                self.assertEqual(guard.blocked_since, saved["blocked_since"])
+        self.assertTrue(all(history[: 3 * 24]))
+        self.assertFalse(history[3 * 24])
+        self.assertFalse(history[5 * 24])
+        self.assertTrue(history[7 * 24])
+        self.assertTrue(history[9 * 24])
+        self.assertFalse(history[11 * 24])
+        self.assertFalse(history[-1])
+        self.assertLessEqual(len(guard.records), 510)
 
     def test_no_empty_classic_fallback_and_bad_thresholds(self):
         """Bad configuration and missing classic data cannot turn a valid forecast into zero load."""

@@ -2124,7 +2124,7 @@ For a detailed explanation of how the neural network works and comprehensive con
 With LoadML enabled, `load_ml_guard_mode: monitor` (the default) records ML and classic
 household-load forecasts before consumption occurs. It works with `load_ml_source: false`
 as well as true. Monitoring does not veto a valid ML forecast. Set the mode to `off` to
-disable recording, or `auto` to allow a temporary fallback to the classic forecast.
+disable recording, or `auto` to select historical first and require ML to earn selection.
 
 Change the mode directly in the accuracy panel on **Charts → LoadML / LoadMLPower**
 using **Apply mode**, or use **Config → LoadML forecast guard mode**. Both controls
@@ -2150,16 +2150,27 @@ later retraining cannot rewrite them. Scores cover energy consumed after each sn
 rather than cumulative daily totals that include already measured consumption. Overlapping
 samples are useful for monitoring but are not independent days of evidence.
 
-Automatic fallback checks eight-hour and 24-hour errors separately. Either can trigger
-fallback after three recent completed windows issued at least 24 hours apart. In every
-window ML must be wrong by more than both 3 kWh per 24 hours (1 kWh over eight hours) and
-40% of actual load. Its error must also exceed 1.25 times the classic error plus 0.25 kWh
-per 24 hours. Thus correct daily energy cannot hide a repeated eight-hour timing error.
-Recovery needs three recent independent windows for the failing horizon within the error
-limits and no worse than classic plus that tolerance; other horizons with sufficient
-evidence must also meet those recovery conditions. One good hour or retraining alone
-cannot switch back. ML keeps forecasting and being scored during fallback. A source
-change forces a fresh battery plan. The entity reports which horizon triggered fallback.
+With **Automatic fallback** and `load_ml_source: true`, historical supplies planning
+until ML earns selection. Both the eight-hour and 24-hour checks need three recent
+completed windows issued at least 24 hours apart. In every qualifying window ML's
+absolute energy error must be at least 20% lower than historical and improve by at least
+0.25 kWh per 24 hours (about 0.083 kWh over eight hours). ML must also be within either
+3 kWh per 24 hours (1 kWh over eight hours) or 40% of actual load. A tie, one good day,
+or correct daily energy with poor eight-hour timing cannot earn selection. Initial
+qualification therefore takes at least three days of prospective 24-hour evidence.
+
+After qualification, similar performance or one unusual day does not switch sources.
+Either horizon returns planning to historical after three independent windows where
+ML's error exceeds 1.10 times historical error plus 0.25 kWh per 24 hours. This also
+catches forecasts beyond the previous severe-error limits. Missing or stale comparison evidence withdraws earned
+selection. Recovery requires the same clear wins on both horizons, using only forecasts
+issued after selection was withdrawn. Retraining alone cannot grant permission.
+
+ML keeps forecasting and being scored while historical supplies planning. Monitoring
+can collect qualifying evidence before `load_ml_source` is enabled. Every source change
+forces a fresh battery plan. The panel reports collecting evidence, historical preferred,
+earned ML selection, or a historical fallback warning. Upgrades retain existing paired
+observations but do not treat the older policy's implicit ML preference as earned selection.
 If the classic forecast cannot be built, the accuracy guard warns rather than replacing
 an available, valid ML forecast with empty data.
 
@@ -2167,7 +2178,7 @@ Optional settings in the main Predbat `apps.yaml` section:
 
 ```yaml
 load_ml_guard_mode: monitor  # optional initial default; normally use the chart/Config selector
-load_ml_guard_min_days: 3    # 2-5 independent daily windows for fallback and recovery
+load_ml_guard_min_days: 3    # 2-5 independent daily windows for qualification, fallback and recovery
 load_ml_guard_error_kwh: 3.0
 load_ml_guard_error_percent: 40.0
 load_ml_guard_notify: false # optional notify_devices messages on warnings/recovery

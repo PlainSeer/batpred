@@ -4007,10 +4007,12 @@ chart.render();
         recommendation_key = attributes.get("recommended_source", "")
         recommendation_key = recommendation_key if isinstance(recommendation_key, str) else ""
         source = {"ml": "LoadML", "classic": "Historical forecast", "external": "External forecast"}.get(source_key, "Awaiting first report")
-        recommendation = {"ml": "LoadML within guard limits", "classic": "Historical forecast"}.get(recommendation_key, "Collecting evidence")
+        recommendation = {"ml": "LoadML earned selection", "classic": "Historical forecast"}.get(recommendation_key, "Collecting evidence")
         headline, tone = "Collecting evidence", "info"
         explanations = {
             "measuring": "Recording forecasts and waiting for their actual consumption. Decisions need results from several days.",
+            "historical_preferred": "LoadML has not shown a clear, sustained improvement over the historical forecast on both the 8-hour and 24-hour checks.",
+            "ml_earned": "LoadML earned selection by consistently beating historical on both the 8-hour and 24-hour checks. Its accuracy is still being monitored.",
             "within_limits": "No sustained error above the guard limits. The table shows which forecast has been closer to actual load.",
             "ml_worse_than_classic": "LoadML has repeatedly been less accurate than the historical forecast.",
             "classic_unavailable": "The historical forecast cannot be built. Valid ML data is kept instead of replacing it with empty load.",
@@ -4020,6 +4022,10 @@ chart.render();
         explanation = explanations.get(reason, "Waiting for the first accuracy report from a PredBat planning cycle.")
         if reason == "within_limits":
             headline = "Within guard limits"
+        elif reason == "ml_earned":
+            headline = "LoadML earned selection"
+        elif reason == "historical_preferred":
+            headline = "Historical preferred"
         elif reason == "ml_worse_than_classic":
             headline, tone = ("Historical fallback active" if mode == "auto" and attributes.get("selected_source") == "classic" else "Warning: ML is less accurate"), "warning"
             horizon = attributes.get("fallback_horizon_hours")
@@ -4034,6 +4040,8 @@ chart.render();
             recommendation = "Collecting evidence"
         if mode == "monitor":
             explanation += " Monitoring records and warns; it does not automatically change forecast selection."
+        elif mode == "auto":
+            explanation += " Automatic mode starts with historical and only permits LoadML after it earns selection. ML must also be enabled as a planning source."
         stale = False
         report_time = attributes.get("updated_at") or raw.get("last_updated")
         if report_time:
@@ -4048,7 +4056,7 @@ chart.render();
             recommendation = "Awaiting a fresh report"
         if mode == "off":
             headline, tone = "Monitoring off", "info"
-            explanation = "Accuracy recording is disabled. Enable monitoring in apps.yaml to collect real-world comparisons."
+            explanation = "Accuracy recording is disabled. Select a monitoring mode below or in Config to collect real-world comparisons."
             source, recommendation = "Not reported", "Monitoring is off"
         scores = attributes.get("scores")
         scores = scores if isinstance(scores, dict) and mode != "off" else {}
