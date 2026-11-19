@@ -2119,6 +2119,64 @@ For a detailed explanation of how the neural network works and comprehensive con
 | `load_ml_database_days` | Integer | No | 90 | `load_ml_database_days` | Days of history to accumulate in the on-disk database (`predbat_ml_history.npz`); set to 0 to disable the database |
 | `load_ml_retrain_interval_hours` | Integer | No | 2 | `load_ml_retrain_interval_hours` | Hours between training cycles (1–48); use 24 for daily retraining. Predictions still update every 30 minutes |
 
+#### Measured forecast accuracy and optional fallback (load_ml)
+
+With LoadML enabled, `load_ml_guard_mode: monitor` (the default) records ML and classic
+household-load forecasts before consumption occurs. It works with `load_ml_source: false`
+as well as true. Monitoring does not veto a valid ML forecast. Set the mode to `off` to
+disable recording, or `auto` to allow a temporary fallback to the classic forecast.
+
+`sensor.predbat_load_ml_accuracy` shows the selected source, reason, recommended source,
+and seven-day energy MAE and signed bias for one-hour, eight-hour and 24-hour windows.
+Positive bias means the forecast was higher than actual load. Snapshots are taken at most once per hour and frozen;
+later retraining cannot rewrite them. Scores cover energy consumed after each snapshot,
+rather than cumulative daily totals that include already measured consumption. Overlapping
+samples are useful for monitoring but are not independent days of evidence.
+
+Automatic fallback checks eight-hour and 24-hour errors separately. Either can trigger
+fallback after three recent completed windows issued at least 24 hours apart. In every
+window ML must be wrong by more than both 3 kWh per 24 hours (1 kWh over eight hours) and
+40% of actual load. Its error must also exceed 1.25 times the classic error plus 0.25 kWh
+per 24 hours. Thus correct daily energy cannot hide a repeated eight-hour timing error.
+Recovery needs three recent independent windows for the failing horizon within the error
+limits and no worse than classic plus that tolerance; other horizons with sufficient
+evidence must also meet those recovery conditions. One good hour or retraining alone
+cannot switch back. ML keeps forecasting and being scored during fallback. A source
+change forces a fresh battery plan. The entity reports which horizon triggered fallback.
+If the classic forecast cannot be built, the accuracy guard warns rather than replacing
+an available, valid ML forecast with empty data.
+
+Optional settings in the main Predbat `apps.yaml` section:
+
+```yaml
+load_ml_guard_mode: monitor  # off | monitor | auto
+load_ml_guard_min_days: 3    # 2-5 independent daily windows for fallback and recovery
+load_ml_guard_error_kwh: 3.0
+load_ml_guard_error_percent: 40.0
+load_ml_guard_notify: false # optional notify_devices messages on warnings/recovery
+```
+
+Source and reason changes are logged; notifications are off by default and repeated
+identical warnings are suppressed. A non-active model, invalid forecast, gaps, timestamps
+older than an hour, or less than 24 hours of remaining coverage cannot supply ML load,
+even if the sensor retains old `results`. Explicit `load_forecast_only` and separately
+configured `load_forecast` sources remain respected.
+
+Both scores use the unadjusted household forecast, before in-day, manual and dynamic load
+adjustments. Actuals come from the main load counter after its normal power/history fill,
+with the same measured EV and iBoost exclusions as the classic forecast. An EV outside
+the house-load measurement is not subtracted again. Missing counter coverage and
+threshold-inferred EV subtraction are not scored. This is not an independent meter audit:
+bad source readings or their existing gap filling can still affect measured actuals.
+
+Evidence is bounded and saved hourly through Storage, separately from the neural model
+and its history. Compatible evidence and fallback state survive restarts. Changing the
+load definition starts new guard evidence; no model or history file is deleted. Fresh
+measurement takes at least several days: there is no retrospective accuracy claim, and
+automatic fallback cannot prevent every bad forecast before its actual load is known.
+This feature does not fix training, tariff history or clock drift; it measures the
+consequences and can keep a persistently worse ML forecast out of planning.
+
 Note: **load_today**, **pv_today** and **car_charging_energy** `apps.yaml` configuration items are also used, but these should already be set in Predbat.
 
 #### Configuration example (load_ml)
