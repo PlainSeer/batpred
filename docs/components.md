@@ -2142,6 +2142,8 @@ The final model is then fitted on all available history. This algorithm version
 refits the regression coefficients and starts new regression accuracy evidence;
 consumption history, neural weights and compatible neural evidence are retained.
 Normal restarts and routine retraining do not reset the accuracy record.
+After an upgrade, a regression sensor retained by HA is ignored until it reports
+the current model version, preventing old predictions from entering new evidence.
 
 The existing **Monitoring only / Automatic fallback / Off** selector still applies.
 In Automatic mode, `load_ml_source: true` permits either learned model to earn planning

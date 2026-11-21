@@ -4712,6 +4712,11 @@ class Fetch:
         if status != "active":
             setattr(self, problem, "model_{}".format(status or "unavailable"))
             return {}
+        if regression and self.get_state_wrapper(entity_id, attribute="model_version") != REGRESSION_MODEL_VERSION:
+            # HA can retain an active sensor from the previous installation until
+            # the component publishes. Never credit its forecast to a new model.
+            setattr(self, problem, "model_version_mismatch")
+            return {}
         load_ml_forecast = self.get_state_wrapper(entity_id, attribute="results")
         if load_ml_forecast:
             try:

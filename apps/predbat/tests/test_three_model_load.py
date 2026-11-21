@@ -287,13 +287,26 @@ class ThreeModelTests(unittest.TestCase):
         base = GuardBase()
         results = {(base.now_utc + timedelta(minutes=m)).isoformat(): m * 0.01 for m in range(0, 2881, 5)}
         statuses = {"sensor.predbat_load_ml_forecast": "active", "sensor.predbat_load_regression_forecast": "unavailable"}
-        base.get_state_wrapper = lambda entity, attribute=None, **kwargs: results if attribute == "results" else statuses[entity]
+        base.get_state_wrapper = lambda entity, attribute=None, **kwargs: results if attribute == "results" else MODEL_VERSION if attribute == "model_version" else statuses[entity]
         self.assertTrue(base.fetch_ml_load_forecast(base.now_utc, save=False))
         self.assertFalse(base.fetch_ml_load_forecast(base.now_utc, save=False, regression=True))
         statuses["sensor.predbat_load_regression_forecast"] = "active"
         self.assertTrue(base.fetch_ml_load_forecast(base.now_utc, save=False, regression=True))
         del results[(base.now_utc + timedelta(minutes=20)).isoformat()]
         self.assertFalse(base.fetch_ml_load_forecast(base.now_utc, save=False, regression=True))
+
+    def test_cached_previous_regression_forecast_cannot_count_as_new_version(self):
+        """A retained HA sensor must match the new algorithm before comparison or planning reads it."""
+        base = GuardBase()
+        attrs = {"results": {(base.now_utc + timedelta(minutes=m)).isoformat(): m * 0.01 for m in range(0, 2881, 5)}, "model_version": MODEL_VERSION}
+        base.get_state_wrapper = lambda entity, attribute=None, **kwargs: attrs.get(attribute) if attribute else "active"
+        for version in (None, MODEL_VERSION - 1, MODEL_VERSION + 1):
+            attrs["model_version"] = version
+            self.assertFalse(base.fetch_ml_load_forecast(base.now_utc, save=False, regression=True))
+            self.assertEqual(base.load_regression_forecast_problem, "model_version_mismatch")
+            self.assertTrue(base.fetch_ml_load_forecast(base.now_utc, save=False))
+        attrs["model_version"] = MODEL_VERSION
+        self.assertTrue(base.fetch_ml_load_forecast(base.now_utc, save=False, regression=True))
 
     def test_three_column_display_names_regression_and_preserves_controls(self):
         """All three scores, matching periods and the selected regression are visible in the existing panel."""
