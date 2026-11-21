@@ -293,6 +293,7 @@ class MinuteArray:
 # (rate_grids()), so only battery_rate_grid_learned is dumped - every debug_history snapshot would otherwise carry them.
 DEBUG_EXCLUDE_LIST = [
     "load_forecast_guard",  # Runtime evidence helper; its public summary is on load_ml_accuracy.
+    "load_forecast_guard_regression",
     "ha_interface",
     "components",
     "coordinator",

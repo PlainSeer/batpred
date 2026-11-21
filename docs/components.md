@@ -2121,6 +2121,61 @@ For a detailed explanation of how the neural network works and comprehensive con
 
 #### Measured forecast accuracy and optional fallback (load_ml)
 
+With LoadML enabled, this fork also runs a lightweight **regression** candidate alongside
+the neural network and historical forecast. It uses the same prepared household data,
+including the same measured EV and iBoost exclusions. No additional apps.yaml entry is
+needed. Set `load_ml_regression_enable: false` to return to the two-model comparison.
+
+<!-- cspell:ignore Shedimus -->
+
+Regression is based on [the LoadReg proposal by Shedimus](https://github.com/springfall2008/batpred/discussions/6242)
+and the implementation at commit `49c405090e0097dabfb327a522bd13b07357dc40`. It predicts
+48 hours directly in half-hour slots from a weekly household profile, temperature,
+an optional cold-weather term, and recent two-hour and daily load changes. The output
+is converted to five-minute cumulative kWh without adding energy at the forecast origin.
+It needs at least 10 days of complete history. Its holdout is the latest 48 hours;
+the decision to fit the cold term also excludes those held-out days.
+
+The existing **Monitoring only / Automatic fallback / Off** selector still applies.
+In Automatic mode, `load_ml_source: true` permits either learned model to earn planning
+selection. `load_ml_source: false` keeps planning on historical (or an explicitly
+configured external-only forecast), while all candidates can still be monitored.
+Monitoring and Off preserve the existing neural source choice; they never choose
+regression for planning. This feature does not change iBoost or inverter controls.
+
+Each learned candidate needs its **own** three recent independent daily wins against
+historical on both eight-hour and 24-hour windows, with the margins described below.
+Adding regression preserves existing compatible neural evidence but gives regression
+no inherited permission. When both candidates qualify, their matched eight-hour and
+24-hour energy errors rank them. An existing qualified selection is retained unless
+the challenger beats it by at least 20% and 0.25 kWh per day in every required window
+on both horizons. Missing forecasts or evidence and sustained deterioration return
+selection to an available qualified candidate or historical. Every actual source
+change requests a new battery plan. An unavailable historical forecast is reported
+explicitly; valid candidate data is retained as a last resort rather than creating
+an empty load forecast.
+
+The accuracy panel compares **all three forecasts over the same frozen intervals**.
+Its matched-window count starts with the new regression observations; older neural
+observations remain in `model_scores` and still count towards neural qualification.
+The existing LoadML chart adds regression and historical future curves. The raw neural
+forecast and its model files stay separate and retain their existing names.
+
+Additional entities:
+
+- `sensor.predbat_load_regression_forecast`: candidate status and five-minute `results`;
+  its `breakdown` explains the contribution of each term per half-hour.
+- `sensor.predbat_load_regression_stats`: candidate weights, training time, household
+  total and holdout errors labelled `mae_kwh_per_30min` / `bias_kwh_per_30min`.
+- `sensor.predbat_load_historical_forecast`: the counterfactual historical curve,
+  anchored to today's measured household load after the configured exclusions.
+
+Prefixes follow the configured instance prefix. Holdout errors from the neural model
+are per five minutes, and must not be compared numerically with regression's half-hour
+holdout errors. The accuracy panel's one-hour, eight-hour and daily errors use the
+same kWh units for all three. Regression coefficients and its qualification evidence
+use separate Storage keys; no neural weights or history files are overwritten.
+
 With LoadML enabled, `load_ml_guard_mode: monitor` (the default) records ML and classic
 household-load forecasts before consumption occurs. It works with `load_ml_source: false`
 as well as true. Monitoring does not veto a valid ML forecast. Set the mode to `off` to

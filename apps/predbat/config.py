@@ -3119,6 +3119,7 @@ APPS_SCHEMA = {
     "load_power_fill_enable": {"type": "boolean"},
     "load_history_fill_enable": {"type": "boolean"},
     "load_ml_enable": {"type": "boolean"},
+    "load_ml_regression_enable": {"type": "boolean"},
     "load_ml_guard_mode": {"type": "string"},
     "load_ml_guard_min_days": {"type": "integer", "min": 2, "max": 5},
     "load_ml_guard_error_kwh": {"type": "float", "min": 0.1, "max": 100},

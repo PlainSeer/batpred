@@ -39,7 +39,7 @@ from utils import (
 )
 from battery_rate_grid import clean_rate_grid_samples, combine_rate_grid, fit_rate_grid, manual_rate_grid, merge_rate_grid_samples, rate_grid_table
 from battery_curve import charge_day
-from load_forecast_guard import LoadForecastGuard
+from load_forecast_guard import LoadForecastGuard, LoadForecastComparison, REGRESSION_MODEL_VERSION
 from const import (
     MINUTE_WATT,
     PREDICT_STEP,
@@ -1646,13 +1646,18 @@ class Fetch:
         # Observe ML independently of whether it supplies the plan. This is also
         # needed while the accuracy guard has temporarily selected classic load.
         observed_ml_forecast = {}
+        observed_regression_forecast = None
         load_ml_forecast = {}
         guard_enabled = self.get_arg("load_ml_enable", False) and self.get_arg("load_ml_guard_mode", "monitor") != "off"
+        if guard_enabled and self.get_arg("load_ml_regression_enable", True):
+            observed_regression_forecast = self.fetch_ml_load_forecast(self.now_utc, save=False, regression=True)
         if self.get_arg("load_ml_enable", False) and (self.get_arg("load_ml_source", False) or (guard_enabled and save)):
             observed_ml_forecast = self.fetch_ml_load_forecast(self.now_utc, save=save and self.get_arg("load_ml_source", False))
             load_ml_forecast = observed_ml_forecast if self.get_arg("load_ml_source", False) else {}
             if not save and self.get_arg("load_ml_guard_mode", "monitor") == "auto" and getattr(self, "load_forecast_guard_fallback", True):
                 load_ml_forecast = {}
+            elif not save and self.get_arg("load_ml_guard_mode", "monitor") == "auto" and getattr(self, "load_forecast_guard_selected", "classic") == "regression":
+                load_ml_forecast = observed_regression_forecast or {}
             if load_ml_forecast:
                 self.load_forecast_only = True  # Use only ML forecast for load if enabled and we have data
 
@@ -2021,7 +2026,7 @@ class Fetch:
         guard_changed = False
         guard_classic = None
         if guard_enabled and save and self.load_minutes:
-            load_ml_forecast, guard_classic, guard_changed = self.apply_load_forecast_guard(observed_ml_forecast, load_ml_forecast)
+            load_ml_forecast, guard_classic, guard_changed = self.apply_load_forecast_guard(observed_ml_forecast, load_ml_forecast, observed_regression_forecast)
 
         if self.load_minutes and not self.load_forecast_only and not self.load_forecast_history:
             # Apply modal filter to historical data. Skipped for days_previous_auto: the weighted-bucket
@@ -4459,11 +4464,14 @@ class Fetch:
         finally:
             self.days_previous, self.days_previous_weight = days, weights
 
-    def apply_load_forecast_guard(self, observed_ml, selected_ml):
+    def apply_load_forecast_guard(self, observed_ml, selected_ml, regression=None):
         """Apply an optional source veto without losing separately configured forecasts."""
         classic = self.classic_load_forecast_for_guard()
-        use_ml, changed = self.update_load_forecast_guard(observed_ml, classic)
-        if selected_ml and not use_ml:
+        if regression is not None:
+            self.publish_classic_load_forecast(classic)
+        use_ml, changed = self.update_load_forecast_guard(observed_ml, classic) if regression is None else self.update_load_forecast_guard(observed_ml, classic, regression)
+        use_regression = regression is not None and getattr(self, "load_forecast_guard_selected", "classic") == "regression"
+        if selected_ml and (not use_ml or use_regression):
             # ML is the first entry added by fetch_extra_load_forecast. Rebuild the
             # sum from the other sources, without fetching those sensors again.
             self.load_forecast_array = self.load_forecast_array[1:]
@@ -4473,7 +4481,34 @@ class Fetch:
                     self.load_forecast[minute] = self.load_forecast.get(minute, 0) + value
             self.load_forecast_only = self.get_arg("load_forecast_only", False)
             selected_ml = {}
+        if use_regression:
+            selected_ml = regression
+            self.load_forecast_array.insert(0, regression)
+            for minute, value in regression.items():
+                self.load_forecast[minute] = self.load_forecast.get(minute, 0) + value
+            self.load_forecast_only = True
         return selected_ml, classic, changed
+
+    def publish_classic_load_forecast(self, forecast):
+        """Expose the counterfactual historical curve on the same household baseline as the candidates."""
+        start = self.minutes_now
+        baseline = self.guard_actual_load(int(self.midnight_utc.timestamp() // 60), start)
+        results = {}
+        if forecast and baseline is not None:
+            total = baseline
+            for minute in range(start, start + min(self.forecast_minutes, 2880) + 1):
+                if minute > start:
+                    before, after = forecast.get(minute - 1), forecast.get(minute)
+                    if before is None or after is None or not math.isfinite(before) or not math.isfinite(after):
+                        results = {}
+                        break
+                    total += max(after - before, 0)
+                    if minute % 1440 == 0:
+                        total = 0
+                if minute % PREDICT_STEP == 0:
+                    stamp = self.midnight_utc + timedelta(minutes=minute)
+                    results[stamp.strftime(TIME_FORMAT)] = dp4(total)
+        self.dashboard_item("sensor." + self.prefix + "_load_historical_forecast", state="active" if results else "unavailable", attributes={"friendly_name": "Historical Household Forecast", "results": results}, app="load_ml")
 
     def guard_actual_load(self, start, duration):
         """Measured household energy in a UTC interval; never fill missing actuals with a forecast."""
@@ -4500,7 +4535,7 @@ class Fetch:
             total += load
         return total
 
-    def update_load_forecast_guard(self, ml_forecast, classic_forecast):
+    def update_load_forecast_guard(self, ml_forecast, classic_forecast, regression=None):
         """Record paired forecasts, publish real-world scores and optionally select classic load."""
         import hashlib
         import json
@@ -4548,12 +4583,12 @@ class Fetch:
             except (TypeError, ValueError):
                 return default
 
-        reason = guard.judge(now, int(setting("load_ml_guard_min_days", 3, 2, 5)), setting("load_ml_guard_error_kwh", 3.0, 0.1, 100), setting("load_ml_guard_error_percent", 40.0, 1, 1000))
+        thresholds = (int(setting("load_ml_guard_min_days", 3, 2, 5)), setting("load_ml_guard_error_kwh", 3.0, 0.1, 100), setting("load_ml_guard_error_percent", 40.0, 1, 1000))
+        reason = guard.judge(now, *thresholds)
         available = bool(ml_forecast)
         if not available:
             guard.require_new_evidence(now)
             reason = getattr(self, "load_ml_forecast_problem", "ml_unavailable")
-        self.load_forecast_guard_fallback = guard.fallback
         requested = self.get_arg("load_ml_source", False)
         use_ml = available and not (mode == "auto" and guard.fallback and classic_forecast)
         if guard.fallback and not classic_forecast and available:
@@ -4562,6 +4597,54 @@ class Fetch:
             selected = "classic" if not self.get_arg("load_forecast_only", False) else "external"
         else:
             selected = "ml" if use_ml else "classic" if not self.get_arg("load_forecast_only", False) else "external"
+        recommended = "classic" if (guard.fallback and classic_forecast) or not available else "ml"
+        comparison = None
+        regression_guard = None
+        if regression is not None:
+            identity = fingerprint + ":regression:" + str(REGRESSION_MODEL_VERSION)
+            regression_guard = getattr(self, "load_forecast_guard_regression", None)
+            if regression_guard is None or regression_guard.fingerprint != identity:
+                regression_guard = self.load_forecast_guard_regression = LoadForecastGuard(identity)
+                self.load_forecast_guard_recommendation = "classic"
+            if storage and not regression_guard.loaded:
+                try:
+                    stored = run_async(storage.load("predbat", "load_forecast_regression_accuracy"))
+                    if isinstance(stored, dict):
+                        regression_guard.restore(stored, now)
+                        if stored.get("fingerprint") == identity:
+                            self.load_forecast_guard_recommendation = stored.get("selection", "classic")
+                        regression_guard.loaded = True
+                    elif stored is None:
+                        regression_guard.empty_reads.append(now)
+                        if len(set(regression_guard.empty_reads)) >= 3 and now - regression_guard.empty_reads[0] >= 10:
+                            regression_guard.loaded = True
+                except Exception as exc:
+                    self.log("Warn: Regression accuracy storage read failed: {}".format(exc))
+            regression_guard.advance(now, self.guard_actual_load)
+            if regression and classic_forecast:
+                regression_guard.capture(now, self.minutes_now, regression, classic_forecast)
+            regression_reason = regression_guard.judge(now, *thresholds)
+            if not regression:
+                regression_guard.require_new_evidence(now)
+                regression_reason = getattr(self, "load_regression_forecast_problem", "regression_unavailable")
+            comparison = LoadForecastComparison(guard, regression_guard, getattr(self, "load_forecast_guard_recommendation", "classic"))
+            recommended = comparison.choose(now, {"ml": available, "regression": bool(regression)}, thresholds[0])
+            if not classic_forecast and recommended == "classic":
+                recommended = "ml" if available else "regression" if regression else "classic"
+            regression_guard.dirty |= recommended != getattr(self, "load_forecast_guard_recommendation", "classic")
+            self.load_forecast_guard_recommendation = recommended
+            if recommended == "regression":
+                reason = "regression_earned" if classic_forecast else "classic_unavailable"
+            elif recommended == "ml":
+                reason = "ml_earned" if classic_forecast else "classic_unavailable"
+            elif reason != "measuring" and regression_reason != "measuring":
+                reason = "historical_preferred"
+            else:
+                reason = "measuring"
+            if requested and mode == "auto":
+                selected = recommended if recommended != "classic" else "classic" if not self.get_arg("load_forecast_only", False) else "external"
+                use_ml = selected in ("ml", "regression")
+        self.load_forecast_guard_fallback = selected not in ("ml", "regression") if mode == "auto" else guard.fallback
         previous = getattr(self, "load_forecast_guard_selected", None)
         self.load_forecast_guard_selected = selected
         message = (selected, reason, mode)
@@ -4569,7 +4652,7 @@ class Fetch:
             warn = reason in ("ml_worse_than_classic", "classic_unavailable", "invalid_forecast", "stale_or_short_forecast", "model_stale", "model_fallback_stale", "model_validation_failed", "model_fallback_validation_failed")
             text = "Load forecast accuracy: {} mode, selected {}, reason {}".format(mode, selected, reason)
             self.log(("Warn: " if warn else "Info: ") + text)
-            if self.get_arg("load_ml_guard_notify", False) and (warn or (previous == "classic" and selected == "ml")):
+            if self.get_arg("load_ml_guard_notify", False) and (warn or (previous == "classic" and selected in ("ml", "regression"))):
                 try:
                     self.call_notify(text)
                 except Exception as exc:
@@ -4585,9 +4668,14 @@ class Fetch:
                 "mode": mode,
                 "selected_source": selected,
                 "reason": reason,
-                "recommended_source": "classic" if (guard.fallback and classic_forecast) or not available else "ml",
+                "recommended_source": recommended,
                 "fallback_horizon_hours": guard.trigger_horizon // 60 if guard.trigger_horizon else None,
-                "scores": guard.scores(),
+                "scores": comparison.scores() if comparison else guard.scores(),
+                "models": ["classic", "ml", "regression"] if comparison else ["classic", "ml"],
+                "candidate_status": (
+                    {"ml": "active" if available else getattr(self, "load_ml_forecast_problem", "unavailable"), "regression": "active" if regression else getattr(self, "load_regression_forecast_problem", "unavailable")} if comparison else {}
+                ),
+                "model_scores": {"ml": guard.scores(), "regression": regression_guard.scores()} if comparison else {"ml": guard.scores()},
                 "pending_windows": sum(r["actual"] is None for r in guard.records),
             },
             app="load_ml",
@@ -4599,38 +4687,47 @@ class Fetch:
                     guard.last_save = now
             except Exception as exc:
                 self.log("Warn: Load forecast accuracy: could not save evidence: {}".format(exc))
-        return use_ml, (previous is not None and previous != selected) or (previous is None and requested and not use_ml)
+        if storage and regression_guard and regression_guard.loaded and regression_guard.dirty and (regression_guard.last_save is None or now - regression_guard.last_save >= 60 or previous != selected):
+            try:
+                data = {**regression_guard.serialise(), "selection": recommended}
+                if run_async(storage.save("predbat", "load_forecast_regression_accuracy", data, format="json", expiry=self.now_utc + timedelta(days=9))):
+                    regression_guard.dirty = False
+                    regression_guard.last_save = now
+            except Exception as exc:
+                self.log("Warn: Regression accuracy storage save failed: {}".format(exc))
+        return use_ml, (previous is not None and previous != selected) or (previous is None and requested and (not use_ml or (comparison is not None and mode == "auto")))
 
-    def fetch_ml_load_forecast(self, now_utc, save=True):
+    def fetch_ml_load_forecast(self, now_utc, save=True, regression=False):
         """
         Fetches ML load forecast from sensor
         and returns it as a minute_data dictionary
         """
         # Use ML Model for load prediction
-        entity_id = "sensor." + self.prefix + "_load_ml_forecast"
-        self.load_ml_forecast_problem = "ml_unavailable"
+        entity_id = "sensor." + self.prefix + ("_load_regression_forecast" if regression else "_load_ml_forecast")
+        problem = "load_regression_forecast_problem" if regression else "load_ml_forecast_problem"
+        setattr(self, problem, "ml_unavailable")
         # An invalid model may still publish yesterday's results. Never silently
         # consume those merely because the results attribute is non-empty.
         status = self.get_state_wrapper(entity_id)
         if status != "active":
-            self.load_ml_forecast_problem = "model_{}".format(status or "unavailable")
+            setattr(self, problem, "model_{}".format(status or "unavailable"))
             return {}
         load_ml_forecast = self.get_state_wrapper(entity_id, attribute="results")
         if load_ml_forecast:
             try:
                 stamps = sorted(str2time(stamp) for stamp in load_ml_forecast)
                 if not stamps or stamps[0] > now_utc + timedelta(minutes=PREDICT_STEP) or now_utc - stamps[0] > timedelta(minutes=60) or stamps[-1] < now_utc + timedelta(hours=24):
-                    self.load_ml_forecast_problem = "stale_or_short_forecast"
+                    setattr(self, problem, "stale_or_short_forecast")
                     return {}
                 if any((b - a).total_seconds() > PREDICT_STEP * 60 for a, b in zip(stamps, stamps[1:])) or any(not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0 for value in load_ml_forecast.values()):
-                    self.load_ml_forecast_problem = "invalid_forecast"
+                    setattr(self, problem, "invalid_forecast")
                     return {}
             except (TypeError, ValueError):
-                self.load_ml_forecast_problem = "invalid_forecast"
+                setattr(self, problem, "invalid_forecast")
                 return {}
             if save:
                 self.log_replay_ml_forecast(load_ml_forecast)
-            self.log("Loading ML load forecast from sensor.{}_load_ml_forecast".format(self.prefix))
+            self.log("Loading {} load forecast from {}".format("Regression" if regression else "ML", entity_id))
             # Convert format from dict to array
             if isinstance(load_ml_forecast, dict):
                 data_array = []
@@ -4669,7 +4766,7 @@ class Fetch:
         Covers 2 days of history so a reading from shortly before local midnight (whose target minute
         falls just after midnight) is included, rather than leaving the first hour of the day as a gap.
         """
-        entity_id = "sensor." + self.prefix + "_load_ml_stats"
+        entity_id = "sensor." + self.prefix + ("_load_regression_stats" if getattr(self, "load_forecast_guard_selected", "ml") == "regression" else "_load_ml_stats")
         history = self.get_history_wrapper(entity_id, days=2, required=False)
         if not history:
             return {}

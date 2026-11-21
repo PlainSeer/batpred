@@ -10,6 +10,7 @@ import math
 HORIZONS = (60, 480, 1440)
 RETENTION_MINUTES = 7 * 1440
 STORE_VERSION = 2
+REGRESSION_MODEL_VERSION = 3
 
 
 def valid_energy(value):
@@ -188,3 +189,70 @@ class LoadForecastGuard:
         if not self.fallback:
             return "ml_earned"
         return "ml_worse_than_classic" if self.trigger_horizon else "measuring" if len(decisions) < 2 else "historical_preferred"
+
+
+class LoadForecastComparison:
+    """Compare two independently qualified candidates over identical frozen intervals."""
+
+    def __init__(self, neural, regression, selected="classic"):
+        """Use existing per-model evidence; a regression never inherits neural permission."""
+        self.guards = {"ml": neural, "regression": regression}
+        self.selected = selected if selected in ("classic", "ml", "regression") else "classic"
+
+    def matched(self, duration):
+        """Return only pairs with the same issue time, actual energy and historical forecast."""
+        neural = {(r["start"], r["duration"]): r for r in self.guards["ml"].records if r["actual"] is not None}
+        rows = []
+        for other in self.guards["regression"].records:
+            first = neural.get((other["start"], duration)) if other["duration"] == duration else None
+            if first is None or other["actual"] is None or abs(first["actual"] - other["actual"]) > 0.000001 or abs(first["classic"] - other["classic"]) > 0.000001:
+                continue
+            rows.append({"start": first["start"], "duration": duration, "actual": first["actual"], "classic": first["classic"], "ml": first["ml"], "regression": other["ml"]})
+        return sorted(rows, key=lambda r: r["start"], reverse=True)
+
+    def independent(self, now, duration, min_days):
+        """Fresh matched windows separated by full UTC days, never overlapping hours as days."""
+        daily = []
+        for row in self.matched(duration):
+            if not daily or daily[-1]["start"] - row["start"] >= 1440:
+                daily.append(row)
+            if len(daily) == min_days:
+                break
+        if len(daily) < min_days or now - daily[0]["start"] - duration > 180 or daily[0]["start"] - daily[-1]["start"] > min_days * 1440:
+            return []
+        return daily
+
+    def choose(self, now, available, min_days=3):
+        """Select an earned candidate; a challenger needs sustained clear wins to replace it."""
+        eligible = [model for model, guard in self.guards.items() if available.get(model) and not guard.fallback]
+        if not eligible:
+            self.selected = "classic"
+        elif len(eligible) == 1:
+            self.selected = eligible[0]
+        else:
+            pairs = {duration: self.independent(now, duration, min_days) for duration in (480, 1440)}
+            if all(pairs.values()):
+                if self.selected not in eligible:
+                    # Equal weighting of the daily-scaled 8h error and daily energy error.
+                    self.selected = min(eligible, key=lambda m: (sum(sum(abs(r[m] - r["actual"]) for r in rows) / len(rows) * 1440 / d for d, rows in pairs.items()), m))
+                else:
+                    challenger = next(m for m in eligible if m != self.selected)
+                    clear = all(abs(r[challenger] - r["actual"]) <= 0.8 * abs(r[self.selected] - r["actual"]) and abs(r[self.selected] - r["actual"]) - abs(r[challenger] - r["actual"]) >= 0.25 * d / 1440 for d, rows in pairs.items() for r in rows)
+                    if clear:
+                        self.selected = challenger
+            elif self.selected not in eligible:
+                self.selected = "classic"
+        return self.selected
+
+    def scores(self):
+        """Publish all three MAEs on identical completed periods, with consistent units."""
+        scores = {}
+        for duration in HORIZONS:
+            rows = self.matched(duration)
+            score = {"samples": len(rows)}
+            for model in ("ml", "classic", "regression"):
+                errors = [r[model] - r["actual"] for r in rows]
+                score[model + "_mae_kwh"] = round(sum(abs(e) for e in errors) / len(errors), 4) if errors else None
+                score[model + "_bias_kwh"] = round(sum(errors) / len(errors), 4) if errors else None
+            scores[str(duration // 60) + "h"] = score
+        return scores

@@ -3709,12 +3709,16 @@ chart.render();
 
             # Get ML forecast from load_forecast_ml entity results
             load_ml_forecast = self.get_entity_results("sensor." + self.prefix + "_load_ml_forecast")
+            regression_forecast = self.get_entity_results("sensor." + self.prefix + "_load_regression_forecast") if self.base.get_arg("load_ml_regression_enable", True) else {}
+            historical_forecast = self.get_entity_results("sensor." + self.prefix + "_load_historical_forecast") if self.base.get_arg("load_ml_regression_enable", True) else {}
 
             series_data = [
                 {"name": "Load (Actual)", "data": load_today, "opacity": "1.0", "stroke_width": "3", "stroke_curve": "smooth", "color": "#3291a8"},
                 {"name": "Forecast (+1h)", "data": load_today_h1, "opacity": "0.7", "stroke_width": "2", "stroke_curve": "smooth", "color": "#f5a442"},
                 {"name": "Forecast (+8h)", "data": load_today_h8, "opacity": "0.7", "stroke_width": "2", "stroke_curve": "smooth", "color": "#9b59b6"},
                 {"name": "Load (ML Forecast)", "data": load_ml_forecast, "opacity": "1.0", "stroke_width": "3", "stroke_curve": "smooth", "color": "#eb2323"},
+                {"name": "Load (Regression Forecast)", "data": regression_forecast, "opacity": "1.0", "stroke_width": "3", "stroke_curve": "smooth", "color": "#27ae60"},
+                {"name": "Load (Historical Forecast)", "data": historical_forecast, "opacity": "0.8", "stroke_width": "2", "stroke_curve": "smooth", "color": "#3498db"},
             ]
             text += self.render_chart(series_data, "kWh", "ML Load Forecast", now_str)
         elif chart == "LoadMLPower":
@@ -4000,19 +4004,21 @@ chart.render();
         raw = raw if isinstance(raw, dict) else {}
         attributes = raw.get("attributes")
         attributes = attributes if isinstance(attributes, dict) else {}
+        three_models = isinstance(attributes.get("models"), list) and "regression" in attributes["models"]
         reason = attributes.get("reason", "")
         reason = reason if isinstance(reason, str) else ""
         source_key = attributes.get("selected_source", "")
         source_key = source_key if isinstance(source_key, str) else ""
         recommendation_key = attributes.get("recommended_source", "")
         recommendation_key = recommendation_key if isinstance(recommendation_key, str) else ""
-        source = {"ml": "LoadML", "classic": "Historical forecast", "external": "External forecast"}.get(source_key, "Awaiting first report")
-        recommendation = {"ml": "LoadML earned selection", "classic": "Historical forecast"}.get(recommendation_key, "Collecting evidence")
+        source = {"ml": "LoadML", "regression": "Regression", "classic": "Historical forecast", "external": "External forecast"}.get(source_key, "Awaiting first report")
+        recommendation = {"ml": "LoadML earned selection", "regression": "Regression earned selection", "classic": "Historical forecast"}.get(recommendation_key, "Collecting evidence")
         headline, tone = "Collecting evidence", "info"
         explanations = {
             "measuring": "Recording forecasts and waiting for their actual consumption. Decisions need results from several days.",
             "historical_preferred": "LoadML has not shown a clear, sustained improvement over the historical forecast on both the 8-hour and 24-hour checks.",
             "ml_earned": "LoadML earned selection by consistently beating historical on both the 8-hour and 24-hour checks. Its accuracy is still being monitored.",
+            "regression_earned": "Regression earned selection by consistently beating historical on both the 8-hour and 24-hour checks. Its accuracy is still being monitored.",
             "within_limits": "No sustained error above the guard limits. The table shows which forecast has been closer to actual load.",
             "ml_worse_than_classic": "LoadML has repeatedly been less accurate than the historical forecast.",
             "classic_unavailable": "The historical forecast cannot be built. Valid ML data is kept instead of replacing it with empty load.",
@@ -4024,6 +4030,8 @@ chart.render();
             headline = "Within guard limits"
         elif reason == "ml_earned":
             headline = "LoadML earned selection"
+        elif reason == "regression_earned":
+            headline = "Regression earned selection"
         elif reason == "historical_preferred":
             headline = "Historical preferred"
         elif reason == "ml_worse_than_classic":
@@ -4042,6 +4050,8 @@ chart.render();
             explanation += " Monitoring records and warns; it does not automatically change forecast selection."
         elif mode == "auto":
             explanation += " Automatic mode starts with historical and only permits LoadML after it earns selection. ML must also be enabled as a planning source."
+            if three_models:
+                explanation += " Regression can also earn selection. Changing between learned models requires a sustained clear advantage on matched windows."
         stale = False
         report_time = attributes.get("updated_at") or raw.get("last_updated")
         if report_time:
@@ -4109,7 +4119,16 @@ body.dark-mode .load-accuracy .la-best {color:#86efac;}
                 text += '</select><button type="submit">Apply mode</button></form><small>Saved immediately; no restart needed. Guard mode does not enable ML for planning.</small></div>'
                 continue
             text += '<div class="la-card"><span class="la-label">{}</span><strong>{}</strong></div>'.format(html_module.escape(label), html_module.escape(value))
-        text += '</div><p>Average energy error over the past seven days. Lower is better.</p><div class="la-table"><table><thead><tr><th scope="col">Forecast window</th><th scope="col">LoadML error</th><th scope="col">Historical error</th><th scope="col">Closer forecast</th></tr></thead><tbody>'
+        text += "</div><p>Average energy error over the past seven days. Lower is better.</p>"
+        if three_models:
+            text += "<p>All three columns use the same frozen forecast windows and measured household load. Existing neural evidence is retained separately; regression starts its own record.</p>"
+            statuses = attributes.get("candidate_status", {})
+            if isinstance(statuses, dict) and statuses.get("regression") == "model_insufficient_data":
+                text += "<p>Regression is waiting for at least 10 days of complete household history. Historical remains the automatic default.</p>"
+        text += '<div class="la-table"><table><thead><tr><th scope="col">Forecast window</th><th scope="col">LoadML error</th>'
+        if three_models:
+            text += '<th scope="col">Regression error</th>'
+        text += '<th scope="col">Historical error</th><th scope="col">Closer forecast</th></tr></thead><tbody>'
         for horizon in (1, 8, 24):
             row = scores.get("{}h".format(horizon), {})
             row = row if isinstance(row, dict) else {}
@@ -4120,6 +4139,18 @@ body.dark-mode .load-accuracy .la-best {color:#86efac;}
             winner = "Waiting for results" if not ready else "Similar" if abs(ml - classic) < 0.005 else "LoadML" if ml < classic else "Historical"
             ml_text = "{:.2f} kWh".format(ml) if ready else "&mdash;"
             classic_text = "{:.2f} kWh".format(classic) if ready else "&mdash;"
+            if three_models:
+                reg = error_value(row.get("regression_mae_kwh"))
+                ready = ready and reg is not None
+                values = {"LoadML": ml, "Regression": reg, "Historical": classic} if ready else {}
+                ranked = sorted(values, key=values.get)
+                winner = "Waiting for results" if not ready else "Similar" if values[ranked[1]] - values[ranked[0]] < 0.005 else ranked[0]
+                text += '<tr><th scope="row">{} hour{}<small>{} completed matched windows</small></th>'.format(horizon, "s" if horizon != 1 else "", count)
+                for name in ("LoadML", "Regression", "Historical"):
+                    value = "{:.2f} kWh".format(values[name]) if ready else "&mdash;"
+                    text += '<td class="{}">{}</td>'.format("la-best" if winner == name else "", value)
+                text += "<td>{}</td></tr>".format(winner)
+                continue
             text += '<tr><th scope="row">{} hour{}<small>{} completed windows</small></th><td class="{}">{}</td><td class="{}">{}</td><td>{}</td></tr>'.format(
                 horizon, "s" if horizon != 1 else "", count, "la-best" if winner == "LoadML" else "", ml_text, "la-best" if winner == "Historical" else "", classic_text, winner
             )
