@@ -1585,6 +1585,8 @@ class Fetch:
         Fetch all the data, e.g. energy rates, load, PV predictions, car plan etc.
         """
 
+        # Counterfactuals are reusable only within this fetch, after its load inputs are complete.
+        self.load_forecast_guard_classic = None
         prev_octopus_slots = self.octopus_slots.copy()
         prev_octopus_saving_slots = self.octopus_saving_slots.copy()
         prev_octopus_free_slots = self.octopus_free_slots.copy()
@@ -1654,9 +1656,9 @@ class Fetch:
         if self.get_arg("load_ml_enable", False) and (self.get_arg("load_ml_source", False) or (guard_enabled and save)):
             observed_ml_forecast = self.fetch_ml_load_forecast(self.now_utc, save=save and self.get_arg("load_ml_source", False))
             load_ml_forecast = observed_ml_forecast if self.get_arg("load_ml_source", False) else {}
-            if not save and self.get_arg("load_ml_guard_mode", "monitor") == "auto" and getattr(self, "load_forecast_guard_fallback", True):
+            if not save and self.get_arg("load_ml_guard_mode", "monitor") == "auto" and self.load_forecast_guard_fallback:
                 load_ml_forecast = {}
-            elif not save and self.get_arg("load_ml_guard_mode", "monitor") == "auto" and getattr(self, "load_forecast_guard_selected", "classic") == "regression":
+            elif not save and self.get_arg("load_ml_guard_mode", "monitor") == "auto" and self.load_forecast_guard_selected == "regression":
                 load_ml_forecast = observed_regression_forecast or {}
             if load_ml_forecast:
                 self.load_forecast_only = True  # Use only ML forecast for load if enabled and we have data
@@ -2024,22 +2026,26 @@ class Fetch:
             self.cost_today_sofar, self.carbon_today_sofar = self.today_cost(self.import_today, self.export_today, self.car_charging_energy, self.load_minutes, save=save)
 
         guard_changed = False
-        guard_classic = None
         if guard_enabled and save and self.load_minutes:
-            load_ml_forecast, guard_classic, guard_changed = self.apply_load_forecast_guard(observed_ml_forecast, load_ml_forecast, observed_regression_forecast)
+            load_ml_forecast, _, guard_changed = self.apply_load_forecast_guard(observed_ml_forecast, load_ml_forecast, observed_regression_forecast)
 
         if self.load_minutes and not self.load_forecast_only and not self.load_forecast_history:
             # Apply modal filter to historical data. Skipped for days_previous_auto: the weighted-bucket
             # forecast deliberately ignores missing-data buckets, so the gap-filling/padding the modal filter
             # applies would mask exactly the gaps it is designed to exclude.
-            self.previous_days_modal_filter(self.load_minutes)
+            cached = self.load_forecast_guard_classic
+            if cached is not None and cached[1] is not None:
+                self.load_minutes, self.days_previous, self.days_previous_weight = cached[1]
+            else:
+                self.previous_days_modal_filter(self.load_minutes)
             self.log("Historical days now {} weight {}".format(self.days_previous, self.days_previous_weight))
 
         # Weighted-bucket historical load forecast (days_previous_auto). Built here as it needs load_minutes
         # after the power fill. load_ml takes precedence if it already set the forecast-only load source.
         # Also runs with under a day of history, forecasting from what has been recorded today (batpred#5548).
         if self.load_forecast_history and self.load_minutes and not self.load_forecast_only:
-            hist_forecast = guard_classic if guard_classic is not None else self.compute_load_forecast_history(self.now_utc)
+            cached = self.load_forecast_guard_classic
+            hist_forecast = cached[0] if cached is not None else self.compute_load_forecast_history(self.now_utc)
             if hist_forecast:
                 self.load_forecast_only = True
                 for minute, value in hist_forecast.items():
@@ -4444,7 +4450,9 @@ class Fetch:
     def classic_load_forecast_for_guard(self):
         """Build the unadjusted classic forecast without changing the selected source."""
         if self.load_forecast_history:
-            return self.compute_load_forecast_history(self.now_utc)
+            forecast = self.compute_load_forecast_history(self.now_utc)
+            self.load_forecast_guard_classic = (forecast, None)
+            return forecast
         # The modal filter changes the load history in place, so reproduce it on
         # a private copy when scoring the manual days_previous forecast.
         data = self.load_minutes.copy()
@@ -4460,6 +4468,7 @@ class Fetch:
                     forecast[minute + offset] = dp4(cumulative + energy * offset / PREDICT_STEP)
                 cumulative += energy
             forecast[minute + PREDICT_STEP] = dp4(cumulative)
+            self.load_forecast_guard_classic = (forecast, (data, self.days_previous.copy(), self.days_previous_weight.copy()))
             return forecast
         finally:
             self.days_previous, self.days_previous_weight = days, weights
@@ -4470,7 +4479,7 @@ class Fetch:
         if regression is not None:
             self.publish_classic_load_forecast(classic)
         use_ml, changed = self.update_load_forecast_guard(observed_ml, classic) if regression is None else self.update_load_forecast_guard(observed_ml, classic, regression)
-        use_regression = regression is not None and getattr(self, "load_forecast_guard_selected", "classic") == "regression"
+        use_regression = regression is not None and self.load_forecast_guard_selected == "regression"
         if selected_ml and (not use_ml or use_regression):
             # ML is the first entry added by fetch_extra_load_forecast. Rebuild the
             # sum from the other sources, without fetching those sensors again.
@@ -4514,7 +4523,7 @@ class Fetch:
         """Measured household energy in a UTC interval; never fill missing actuals with a forecast."""
         now = int(self.now_utc.timestamp() // 60)
         newer, older = now - start - duration, now - start
-        if newer < 0 or getattr(self, "load_minutes_source", "") not in ("load_today", "ge_cloud"):
+        if newer < 0 or self.load_minutes_source not in ("load_today", "ge_cloud"):
             return None
         channels = [self.load_minutes]
         if self.car_charging_hold:
@@ -4552,7 +4561,7 @@ class Fetch:
         ]
         definition.extend([self.car_charging_hold, self.iboost_energy_subtract, self.base_load])
         fingerprint = hashlib.sha256(json.dumps(definition, sort_keys=True, default=str).encode()).hexdigest()
-        guard = getattr(self, "load_forecast_guard", None)
+        guard = self.load_forecast_guard
         if guard is None or guard.fingerprint != fingerprint:
             guard = self.load_forecast_guard = LoadForecastGuard(fingerprint)
         storage = self.components.get_component("storage") if self.components else None
@@ -4588,7 +4597,7 @@ class Fetch:
         available = bool(ml_forecast)
         if not available:
             guard.require_new_evidence(now)
-            reason = getattr(self, "load_ml_forecast_problem", "ml_unavailable")
+            reason = self.load_ml_forecast_problem
         requested = self.get_arg("load_ml_source", False)
         use_ml = available and not (mode == "auto" and guard.fallback and classic_forecast)
         if guard.fallback and not classic_forecast and available:
@@ -4602,7 +4611,7 @@ class Fetch:
         regression_guard = None
         if regression is not None:
             identity = fingerprint + ":regression:" + str(REGRESSION_MODEL_VERSION)
-            regression_guard = getattr(self, "load_forecast_guard_regression", None)
+            regression_guard = self.load_forecast_guard_regression
             if regression_guard is None or regression_guard.fingerprint != identity:
                 regression_guard = self.load_forecast_guard_regression = LoadForecastGuard(identity)
                 self.load_forecast_guard_recommendation = "classic"
@@ -4626,12 +4635,12 @@ class Fetch:
             regression_reason = regression_guard.judge(now, *thresholds)
             if not regression:
                 regression_guard.require_new_evidence(now)
-                regression_reason = getattr(self, "load_regression_forecast_problem", "regression_unavailable")
-            comparison = LoadForecastComparison(guard, regression_guard, getattr(self, "load_forecast_guard_recommendation", "classic"))
+                regression_reason = self.load_regression_forecast_problem
+            comparison = LoadForecastComparison(guard, regression_guard, self.load_forecast_guard_recommendation)
             recommended = comparison.choose(now, {"ml": available, "regression": bool(regression)}, thresholds[0])
             if not classic_forecast and recommended == "classic":
                 recommended = "ml" if available else "regression" if regression else "classic"
-            regression_guard.dirty |= recommended != getattr(self, "load_forecast_guard_recommendation", "classic")
+            regression_guard.dirty |= recommended != self.load_forecast_guard_recommendation
             self.load_forecast_guard_recommendation = recommended
             if recommended == "regression":
                 reason = "regression_earned" if classic_forecast else "classic_unavailable"
@@ -4645,7 +4654,7 @@ class Fetch:
                 selected = recommended if recommended != "classic" else "classic" if not self.get_arg("load_forecast_only", False) else "external"
                 use_ml = selected in ("ml", "regression")
         self.load_forecast_guard_fallback = selected not in ("ml", "regression") if mode == "auto" else guard.fallback
-        previous = getattr(self, "load_forecast_guard_selected", None)
+        previous = self.load_forecast_guard_selected
         self.load_forecast_guard_selected = selected
         message = (selected, reason, mode)
         if message != guard.last_message:
@@ -4672,9 +4681,7 @@ class Fetch:
                 "fallback_horizon_hours": guard.trigger_horizon // 60 if guard.trigger_horizon else None,
                 "scores": comparison.scores() if comparison else guard.scores(),
                 "models": ["classic", "ml", "regression"] if comparison else ["classic", "ml"],
-                "candidate_status": (
-                    {"ml": "active" if available else getattr(self, "load_ml_forecast_problem", "unavailable"), "regression": "active" if regression else getattr(self, "load_regression_forecast_problem", "unavailable")} if comparison else {}
-                ),
+                "candidate_status": ({"ml": "active" if available else self.load_ml_forecast_problem, "regression": "active" if regression else self.load_regression_forecast_problem} if comparison else {}),
                 "model_scores": {"ml": guard.scores(), "regression": regression_guard.scores()} if comparison else {"ml": guard.scores()},
                 "pending_windows": sum(r["actual"] is None for r in guard.records),
             },
@@ -4771,7 +4778,7 @@ class Fetch:
         Covers 2 days of history so a reading from shortly before local midnight (whose target minute
         falls just after midnight) is included, rather than leaving the first hour of the day as a gap.
         """
-        entity_id = "sensor." + self.prefix + ("_load_regression_stats" if getattr(self, "load_forecast_guard_selected", "ml") == "regression" else "_load_ml_stats")
+        entity_id = "sensor." + self.prefix + ("_load_regression_stats" if self.load_forecast_guard_selected == "regression" else "_load_ml_stats")
         history = self.get_history_wrapper(entity_id, days=2, required=False)
         if not history:
             return {}

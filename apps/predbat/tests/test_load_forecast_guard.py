@@ -41,6 +41,15 @@ class GuardBase(Fetch):
         self.dashboard = {}
         self.load_forecast_only = True
         self.load_forecast_history = True
+        self.load_forecast_array = []
+        self.load_forecast_guard = None
+        self.load_forecast_guard_selected = None
+        self.load_ml_forecast_problem = "ml_unavailable"
+        self.load_forecast_guard_classic = None
+        self.load_forecast_guard_fallback = True
+        self.load_forecast_guard_regression = None
+        self.load_forecast_guard_recommendation = "classic"
+        self.load_regression_forecast_problem = "ml_unavailable"
 
     def get_arg(self, name, default=None, **kwargs):
         """Read test configuration without HA entity lookups."""
