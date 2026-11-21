@@ -58,10 +58,11 @@ class RegressionForecast:
                 async with c.data_lock:
                     load = dict(c.load_data or {})
                     temperature = dict(c.temperature_data or {})
+                    minutes_now = c.minutes_now
                 stamp = self.predictor.training_timestamp
                 due = stamp is None or (now - stamp).total_seconds() >= c.ml_retrain_interval_seconds or not self.predictor.is_valid(now)
                 if due:
-                    fitted = await asyncio.to_thread(self.predictor.train, load, temperature)
+                    fitted = await asyncio.to_thread(self.predictor.train, load, temperature, minutes_now=minutes_now)
                     if fitted is None:
                         self.status = "insufficient_data"
                     else:
@@ -73,7 +74,7 @@ class RegressionForecast:
                     except Exception as exc:
                         c.log("Warn: Regression model storage save failed: {}".format(exc))
                 if self.predictor.is_valid(datetime.now(timezone.utc), c.ml_max_model_age_hours):
-                    predictions, breakdown = await asyncio.to_thread(lambda: (self.predictor.predict(load, temperature), self.predictor.explain(load, temperature)))
+                    predictions, breakdown = await asyncio.to_thread(lambda: (self.predictor.predict(load, temperature, minutes_now=minutes_now), self.predictor.explain(load, temperature, minutes_now=minutes_now)))
                     self.status = "active" if predictions else "invalid_forecast"
                 elif self.status != "insufficient_data":
                     self.status = "not_initialized"
@@ -108,6 +109,7 @@ class RegressionForecast:
             "mae_kwh_per_30min": self.predictor.validation_mae,
             "bias_kwh_per_30min": self.predictor.validation_bias,
             "weights": {term: float(weight) for term, weight in zip(TERMS, self.predictor.weights)} if self.predictor.weights is not None else {},
+            "heat_dropped": list(self.predictor.heat_dropped),
             "training_days": c.load_data_age_days,
             "unit_of_measurement": "kWh",
             "icon": "mdi:chart-line",

@@ -1,5 +1,7 @@
 """Direct regression, independent evidence and three-source planning regressions."""
 
+# cspell:ignore linalg lstsq
+
 import asyncio
 import copy
 import unittest
@@ -10,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 import numpy as np
 
 from load_forecast_guard import LoadForecastGuard, LoadForecastComparison
-from load_regression import LoadRegressionPredictor, MODEL_VERSION
+from load_regression import LoadRegressionPredictor, MODEL_VERSION, TERMS, HEAT_TERMS, PREDICT_HORIZON, heat_input
 from load_regression_forecast import RegressionForecast
 from load_ml_component import LoadMLComponent
 from tests.test_load_forecast_guard import GuardBase, curve, paired_evidence
@@ -337,12 +339,72 @@ class RegressionTests(unittest.TestCase):
         self.assertIsNone(model.train(history(8)))
         self.assertEqual(model.predict(history(8)), {})
 
-    def test_held_out_cold_days_cannot_enable_the_cold_term(self):
-        """Model-structure selection sees training history only, not held-out future temperature."""
-        temperature = {m: (-10 if m < 2880 else 15) for m in history()}
-        model = self.model(temperature=temperature)
-        self.assertFalse(model.cold_fitted)
-        self.assertEqual(model.weights[3], 0)
+    def test_holdout_cannot_change_validation_fit_or_heat_term_selection(self):
+        """Held-out load never influences the coefficients or sign pruning used to score it."""
+        data = history()
+        slots = max(data) // 30 + 1
+        origins = np.arange(1, slots - 7 * 48 + 1)
+        target = origins[:, None] - 1 - np.arange(PREDICT_HORIZON)[None, :]
+        inputs = np.random.default_rng(21).uniform(0, 1, (len(origins), PREDICT_HORIZON, len(TERMS)))
+        inputs[..., 0], inputs[..., 1] = 1, 0.4
+        weights = np.array([0.1, 1, 0.1, 0.2, 0.3, 0.05, 0.1, 0.1])
+        actual = inputs @ weights
+        actual[target < 0] = np.nan
+        changed = actual.copy()
+        changed[(target >= 0) & (target < PREDICT_HORIZON)] += 0.5
+        validation_fits = []
+        least_squares = np.linalg.lstsq
+        for outcomes in (actual, changed):
+            model = LoadRegressionPredictor(log_func=lambda message: None)
+            with patch.object(model, "_inputs", return_value=(inputs, outcomes)), patch("load_regression.np.linalg.lstsq", wraps=least_squares) as fit:
+                self.assertIsNotNone(model.train(data))
+            validation_fits.append(fit.call_args_list[0].args)
+            self.assertAlmostEqual(model.validation_mae, 0 if outcomes is actual else 0.5, places=6)
+        for first, second in zip(*validation_fits):
+            np.testing.assert_array_equal(first, second)
+
+    def test_profile_weight_is_fixed_and_missing_temperature_has_no_heat_adjustment(self):
+        """Changing usage levels cannot shrink the weekly profile through a fitted weight."""
+        data = {m: value * (1.4 - m / (16 * 1440)) for m, value in history().items()}
+        model = self.model(data)
+        self.assertEqual(model.weights[TERMS.index("profile")], 1)
+        for term in HEAT_TERMS:
+            self.assertEqual(model.weights[TERMS.index(term)], 0)
+        self.assertTrue(all(np.isfinite(v) for v in model.predict(data).values()))
+
+    def test_heat_curve_and_local_time_blocks(self):
+        """Cold demand grows smoothly, and night/day/evening use the supplied local clock."""
+        heat = heat_input(np.array([12, 7, 2, 0, -5, -10], dtype=float))
+        self.assertEqual(heat[0], 0)
+        self.assertEqual(heat[1], 5)
+        self.assertTrue(np.all(np.diff(heat) > 0))
+        data = history()
+        weather = {m: (0 if m < 0 else 10) for m in range(-2880, 16 * 1440 + 1, 5)}
+        model = LoadRegressionPredictor(log_func=lambda message: None)
+        inputs, _ = model._inputs(data, weather, np.array([0]), minutes_now=22 * 60)
+        for slot, expected in ((0, "heat_night"), (17, "heat_night"), (18, "heat_day"), (35, "heat_day"), (36, "heat_evening"), (47, "heat_evening"), (48, "heat_night")):
+            for term in HEAT_TERMS[:3]:
+                if term == expected:
+                    self.assertGreater(inputs[0, slot, TERMS.index(term)], 0)
+                else:
+                    self.assertEqual(inputs[0, slot, TERMS.index(term)], 0)
+        shifted, _ = model._inputs(data, weather, np.array([0]), minutes_now=7 * 60)
+        self.assertGreater(shifted[0, 0, TERMS.index("heat_day")], 0)
+        self.assertEqual(shifted[0, 0, TERMS.index("heat_night")], 0)
+
+    def test_negative_heat_slopes_are_dropped_and_refitted(self):
+        """Heating effects cannot subtract electricity when the weather gets colder."""
+        data = history()
+        temperature = {m: 7 + 6 * np.sin(m / 2000) for m in range(-2880, 16 * 1440 + 1, 5)}
+        model = self.model(data, temperature)
+        self.assertTrue(model.heat_dropped)
+        for term in HEAT_TERMS:
+            self.assertGreaterEqual(model.weights[TERMS.index(term)], 0)
+        for term in model.heat_dropped:
+            self.assertEqual(model.weights[TERMS.index(term)], 0)
+        restored = LoadRegressionPredictor(log_func=lambda message: None)
+        self.assertTrue(restored.restore(model.serialise()))
+        self.assertEqual(restored.heat_dropped, model.heat_dropped)
 
     def test_finite_model_round_trip_and_invalid_restore(self):
         """Only finite compatible coefficients and dated validation can restore a model."""
@@ -351,7 +413,15 @@ class RegressionTests(unittest.TestCase):
         restored = LoadRegressionPredictor(log_func=lambda message: None)
         self.assertTrue(restored.restore(saved))
         self.assertEqual(model.predict(history()), restored.predict(history()))
-        for bad in ({**saved, "version": -1}, {**saved, "weights": [float("nan")] * 6}, {**saved, "mae": -1}, {**saved, "trained": "not a date"}):
+        for bad in (
+            {**saved, "version": -1},
+            {**saved, "weights": [float("nan")] * len(TERMS)},
+            {**saved, "mae": -1},
+            {**saved, "trained": "not a date"},
+            {**saved, "weights": [0] * len(TERMS)},
+            {**saved, "heat_dropped": "heat_night"},
+            {**saved, "heat_dropped": ["unknown"]},
+        ):
             self.assertFalse(restored.restore(bad))
         self.assertFalse(model.is_valid(model.training_timestamp + timedelta(hours=49)))
 
@@ -444,6 +514,37 @@ class RegressionTests(unittest.TestCase):
         asyncio.run(runner.update())
         self.assertEqual(runner.status, "active")
         self.assertFalse(storage.saves)
+
+    def test_runner_uses_local_clock_for_training_prediction_and_explanation(self):
+        """Prepared data and the local clock are passed together without changing neural state."""
+        c = self.component(KeyStorage())
+        c.minutes_now = 7 * 60
+        runner = RegressionForecast(c)
+        asyncio.run(runner.update())
+        c.now_utc += timedelta(hours=3)
+        c.minutes_now = 10 * 60
+        model = runner.predictor
+        with patch.object(model, "train", wraps=model.train) as train, patch.object(model, "predict", wraps=model.predict) as predict, patch.object(model, "explain", wraps=model.explain) as explain:
+            asyncio.run(runner.update())
+        self.assertEqual(train.call_args.kwargs["minutes_now"], c.minutes_now)
+        self.assertEqual(predict.call_args.kwargs["minutes_now"], c.minutes_now)
+        self.assertEqual(explain.call_args.kwargs["minutes_now"], c.minutes_now)
+        self.assertEqual(c.published["sensor.predbat_load_regression_stats"]["attributes"]["heat_dropped"], model.heat_dropped)
+
+    def test_previous_algorithm_refits_without_deleting_history(self):
+        """A six-coefficient saved model is replaced while the prepared household history stays intact."""
+        storage = KeyStorage()
+        c = self.component(storage)
+        runner = RegressionForecast(c)
+        asyncio.run(runner.update())
+        history_before = dict(c.load_data)
+        storage.values["load_regression_model"] = {"definition": runner.definition, "model": {**runner.predictor.serialise(), "version": 3, "weights": [0] * 6}}
+        restarted = RegressionForecast(c)
+        asyncio.run(restarted.update())
+        self.assertEqual(restarted.status, "active")
+        self.assertEqual(len(restarted.predictor.weights), len(TERMS))
+        self.assertEqual(storage.values["load_regression_model"]["model"]["version"], MODEL_VERSION)
+        self.assertEqual(c.load_data, history_before)
 
     def test_runner_data_definition_change_refits_only_regression(self):
         """A changed immersion exclusion cannot reuse incompatible regression coefficients."""

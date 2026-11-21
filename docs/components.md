@@ -2129,12 +2129,19 @@ needed. Set `load_ml_regression_enable: false` to return to the two-model compar
 <!-- cspell:ignore Shedimus -->
 
 Regression is based on [the LoadReg proposal by Shedimus](https://github.com/springfall2008/batpred/discussions/6242)
-and the implementation at commit `49c405090e0097dabfb327a522bd13b07357dc40`. It predicts
-48 hours directly in half-hour slots from a weekly household profile, temperature,
-an optional cold-weather term, and recent two-hour and daily load changes. The output
+and the implementation at commit `0e4958c7c248dbcf800bc172441f04c5ed5df7bc`. It predicts
+48 hours directly in half-hour slots from a weekly household profile, temperature
+effects and recent two-hour and daily load changes. The weekly profile has a fixed
+weight of one. Temperature uses a generic heat-pump efficiency curve, separate local
+night/day/evening heating effects and a daily-temperature term. Negative heating
+slopes are removed independently during each fit. The output
 is converted to five-minute cumulative kWh without adding energy at the forecast origin.
 It needs at least 10 days of complete history. Its holdout is the latest 48 hours;
-the decision to fit the cold term also excludes those held-out days.
+the validation fit and its heating-term selection exclude those held-out load values.
+The final model is then fitted on all available history. This algorithm version
+refits the regression coefficients and starts new regression accuracy evidence;
+consumption history, neural weights and compatible neural evidence are retained.
+Normal restarts and routine retraining do not reset the accuracy record.
 
 The existing **Monitoring only / Automatic fallback / Off** selector still applies.
 In Automatic mode, `load_ml_source: true` permits either learned model to earn planning
@@ -2166,7 +2173,8 @@ Additional entities:
 - `sensor.predbat_load_regression_forecast`: candidate status and five-minute `results`;
   its `breakdown` explains the contribution of each term per half-hour.
 - `sensor.predbat_load_regression_stats`: candidate weights, training time, household
-  total and holdout errors labelled `mae_kwh_per_30min` / `bias_kwh_per_30min`.
+  total, any `heat_dropped` terms and holdout errors labelled
+  `mae_kwh_per_30min` / `bias_kwh_per_30min`.
 - `sensor.predbat_load_historical_forecast`: the counterfactual historical curve,
   anchored to today's measured household load after the configured exclusions.
 
