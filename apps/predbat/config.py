@@ -19,6 +19,7 @@ and calculation options.
 """
 
 from predbat import THIS_VERSION
+from load_forecast_source import SOURCE_LABELS, DEFAULT_SOURCE_OPTIONS
 from const import OPTIONS_TIME, PREDBAT_MODE_OPTIONS, PREDBAT_MODE_CONTROL_CHARGEDISCHARGE
 
 # Predbat update options
@@ -1345,6 +1346,24 @@ CONFIG_ITEMS = [
         "option_labels": {"off": "Off", "monitor": "Monitoring only", "auto": "Automatic fallback"},
         "icon": "mdi:shield-check",
         "default": "monitor",
+    },
+    {
+        "name": "load_forecast_source",
+        "friendly_name": "Load forecast planning source in Automatic mode",
+        "type": "select",
+        "options": list(SOURCE_LABELS),
+        "option_labels": SOURCE_LABELS,
+        "icon": "mdi:chart-line",
+        "default": "auto",
+    },
+    {
+        "name": "load_forecast_auto_default",
+        "friendly_name": "Default load source while Automatic collects evidence",
+        "type": "select",
+        "options": list(DEFAULT_SOURCE_OPTIONS),
+        "option_labels": {key: SOURCE_LABELS[key] for key in DEFAULT_SOURCE_OPTIONS},
+        "icon": "mdi:chart-line",
+        "default": "classic",
     },
     {
         "name": "update",
@@ -3121,6 +3140,8 @@ APPS_SCHEMA = {
     "load_ml_enable": {"type": "boolean"},
     "load_ml_regression_enable": {"type": "boolean"},
     "load_ml_guard_mode": {"type": "string"},
+    "load_forecast_source": {"type": "string"},
+    "load_forecast_auto_default": {"type": "string"},
     "load_ml_guard_min_days": {"type": "integer", "min": 2, "max": 5},
     "load_ml_guard_error_kwh": {"type": "float", "min": 0.1, "max": 100},
     "load_ml_guard_error_percent": {"type": "float", "min": 1, "max": 1000},

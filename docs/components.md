@@ -2216,13 +2216,29 @@ rather than cumulative daily totals that include already measured consumption. O
 samples are useful for monitoring but are not independent days of evidence.
 
 With **Automatic fallback** and `load_ml_source: true`, historical supplies planning
-until ML earns selection. Both the eight-hour and 24-hour checks need three recent
+until ML earns selection under the initial source settings. Both the eight-hour and 24-hour checks need three recent
 completed windows issued at least 24 hours apart. In every qualifying window ML's
 absolute energy error must be at least 20% lower than historical and improve by at least
 0.25 kWh per 24 hours (about 0.083 kWh over eight hours). ML must also be within either
 3 kWh per 24 hours (1 kWh over eight hours) or 40% of actual load. A tie, one good day,
 or correct daily energy with poor eight-hour timing cannot earn selection. Initial
 qualification therefore takes at least three days of prospective 24-hour evidence.
+
+On the three-model fork, **Planning source choice** on either LoadML chart or Config
+offers **Automatic** (initial choice), **Historical**, **LoadML**, and **Regression**.
+These controls apply in **Automatic fallback** mode. Manual choices bypass accuracy
+qualification, but an unavailable, stale or invalid candidate still falls back to a
+usable source. All three forecasts continue to be recorded and compared.
+
+With **Automatic** selected, **Default while collecting evidence** chooses the initial
+source (Historical by default). A learned default is provisional: an earned winner
+takes precedence, and established poor performance prevents continued use of that default.
+Explicit learned choices also permit planning without changing `load_ml_source` in
+apps.yaml; `load_ml_enable` and the selected model must still be enabled. Monitoring
+only and Off retain their existing planning behaviour. Separate external load feeds are
+preserved. The report distinguishes the actual planning source from the accuracy
+recommendation. Source changes schedule a fresh plan and are saved immediately, without
+changing model versions, trained weights, household history or collected accuracy windows.
 
 After qualification, similar performance or one unusual day does not switch sources.
 Either horizon returns planning to historical after three independent windows where

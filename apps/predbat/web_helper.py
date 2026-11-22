@@ -10610,6 +10610,9 @@ def get_load_ml_accuracy_css():
 .load-accuracy .la-card {padding:12px;background:#fff;border:1px solid #dbe2ea;border-radius:8px;}
 .load-accuracy .la-label {display:block;font-size:13px;color:#475569;margin-bottom:5px;}
 .load-accuracy .la-mode-form {display:flex;flex-wrap:wrap;gap:8px;align-items:center;}
+.load-accuracy .la-source-form fieldset {border:0;padding:0;margin:0;display:grid;gap:6px;min-width:0;}
+.load-accuracy .la-source-form legend {font-size:13px;margin-bottom:6px;}
+.load-accuracy .la-source-form label {font-size:13px;}
 .load-accuracy select,.load-accuracy button {font:inherit;font-size:14px;padding:6px 8px;border:1px solid #94a3b8;border-radius:5px;}
 .load-accuracy select {background:#fff;color:#172033;max-width:100%;}
 .load-accuracy button {background:#dbeafe;color:#164178;cursor:pointer;}

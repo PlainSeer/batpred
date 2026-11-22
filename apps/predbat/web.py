@@ -3032,11 +3032,19 @@ chart.render();
         postdata = await request.post()
 
         guard_entity = "select." + self.prefix + "_load_ml_guard_mode"
+        source_entities = {
+            "select." + self.prefix + "_load_forecast_source": ("auto", "classic", "ml", "regression"),
+            "select." + self.prefix + "_load_forecast_auto_default": ("classic", "ml", "regression"),
+        }
         guard_submitted = False
         for field in postdata:
             if field.replace("__", ".") == guard_entity:
                 if postdata[field] not in ("off", "monitor", "auto"):
                     raise web.HTTPBadRequest(text="Choose Off, Monitoring only or Automatic fallback")
+                guard_submitted = True
+            elif field.replace("__", ".") in source_entities:
+                if postdata[field] not in source_entities[field.replace("__", ".")]:
+                    raise web.HTTPBadRequest(text="Choose a supported load forecast source")
                 guard_submitted = True
 
         # Process only the submitted form data
@@ -4001,6 +4009,9 @@ chart.render();
         """Readable accuracy status and prospective error scores above the LoadML charts."""
         mode = self.base.get_arg("load_ml_guard_mode", "monitor")
         mode = mode if mode in ("off", "monitor", "auto") else "monitor"
+        from load_forecast_source import SOURCE_LABELS, DEFAULT_SOURCE_OPTIONS, source_settings
+
+        choice, default, _ = source_settings(mode, self.base.get_arg("load_forecast_source", "auto"), self.base.get_arg("load_forecast_auto_default", "classic"), False)
         raw = self.get_state_wrapper("sensor." + self.prefix + "_load_ml_accuracy", raw=True)
         raw = raw if isinstance(raw, dict) else {}
         attributes = raw.get("attributes")
@@ -4050,9 +4061,22 @@ chart.render();
         if mode == "monitor":
             explanation += " Monitoring records and warns; it does not automatically change forecast selection."
         elif mode == "auto":
-            explanation += " Automatic mode starts with historical and only permits LoadML after it earns selection. ML must also be enabled as a planning source."
+            if choice == "auto" and default == "classic":
+                explanation += " Automatic mode starts with historical and only permits LoadML after it earns selection. ML must also be enabled as a planning source."
+            elif choice == "auto":
+                explanation += " Automatic uses the chosen default while evidence is insufficient, then follows the accuracy checks. Established poor performance overrides a learned default."
             if three_models:
                 explanation += " Regression can also earn selection. Changing between learned models requires a sustained clear advantage on matched windows."
+            selection_kind = attributes.get("selection_kind")
+            if selection_kind == "manual":
+                headline, tone = "Manual source selection", "info"
+                explanation = "The requested source supplies the plan while it is available and valid. Accuracy comparisons continue, but automatic accuracy switching is bypassed."
+            elif selection_kind in ("manual_unavailable", "default_unavailable"):
+                headline, tone = "Requested source unavailable", "warning"
+                explanation = "The requested source is unavailable or invalid. The planning source below shows the usable fallback selected for this cycle."
+            elif selection_kind == "automatic_default":
+                headline, tone = "Using automatic default", "info"
+                explanation = "The chosen default supplies the plan while the accuracy checks collect sufficient evidence. This is a provisional choice, not an earned recommendation."
         stale = False
         report_time = attributes.get("updated_at") or raw.get("last_updated")
         if report_time:
@@ -4091,6 +4115,19 @@ chart.render();
                 text += '</select><button type="submit">Apply mode</button></form><small>Saved immediately; no restart needed. Guard mode does not enable ML for planning.</small></div>'
                 continue
             text += '<div class="la-card"><span class="la-label">{}</span><strong>{}</strong></div>'.format(html_module.escape(label), html_module.escape(value))
+        text += '<div class="la-card"><form class="la-source-form" method="post" action="./config">'
+        text += '<input type="hidden" name="_load_ml_guard_return_chart" value="{}">'.format(chart if chart in ("LoadML", "LoadMLPower") else "LoadML")
+        text += "<fieldset{}><legend>Planning source choice</legend>".format(" disabled" if mode != "auto" else "")
+        for name, title, options, current in (
+            ("load_forecast_source", "Planning source", tuple(SOURCE_LABELS), choice),
+            ("load_forecast_auto_default", "Default while collecting evidence", DEFAULT_SOURCE_OPTIONS, default),
+        ):
+            field = html_module.escape("select__" + self.prefix + "_" + name, quote=True)
+            text += '<label for="{0}">{1}</label><select id="{0}" name="{0}">'.format(field, title)
+            for option in options:
+                text += '<option value="{}"{}>{}</option>'.format(option, " selected" if option == current else "", SOURCE_LABELS[option])
+            text += "</select>"
+        text += '<button type="submit">Apply source</button></fieldset></form><small>Used in Automatic fallback mode. Automatic is the default choice; Historical is its initial default. Manual choices bypass accuracy qualification, but never availability checks. Explicit learned choices permit planning without editing apps.yaml; the model must be enabled. The default is used only with Automatic selected. Saved without resetting accuracy records.</small></div>'
         text += "</div><p>Average energy error over the past seven days. Lower is better.</p>"
         if three_models:
             text += "<p>All three columns use the same frozen forecast windows and measured household load. Existing neural evidence is retained separately; regression starts its own record.</p>"
