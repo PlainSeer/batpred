@@ -10606,13 +10606,18 @@ def get_load_ml_accuracy_css():
 .load-accuracy p {white-space:normal;margin:10px 0;line-height:1.5;}
 .load-accuracy .la-status {display:inline-block;padding:6px 12px;border-radius:6px;font-weight:bold;background:#dbeafe;color:#164178;}
 .load-accuracy .la-warning {background:#fff1c2;color:#713f12;}
-.load-accuracy .la-cards {display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:16px 0;}
+.load-accuracy .la-cards {display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:16px 0;align-items:start;}
 .load-accuracy .la-card {padding:12px;background:#fff;border:1px solid #dbe2ea;border-radius:8px;}
 .load-accuracy .la-label {display:block;font-size:13px;color:#475569;margin-bottom:5px;}
 .load-accuracy .la-mode-form {display:flex;flex-wrap:wrap;gap:8px;align-items:center;}
-.load-accuracy .la-source-form fieldset {border:0;padding:0;margin:0;display:grid;gap:6px;min-width:0;}
+.load-accuracy .la-source-form fieldset {border:0;padding:0;margin:0;display:flex;flex-wrap:wrap;gap:10px;min-width:0;align-items:flex-end;}
 .load-accuracy .la-source-form legend {font-size:13px;margin-bottom:6px;}
 .load-accuracy .la-source-form label {font-size:13px;}
+.load-accuracy .la-source-field {display:grid;gap:4px;flex:1 1 210px;min-width:0;}
+.load-accuracy .la-help {margin:10px 0;}
+.load-accuracy .la-help summary {cursor:pointer;font-size:14px;}
+.load-accuracy .la-help p {font-size:13px;}
+.load-accuracy .la-help .la-label {margin-top:10px;}
 .load-accuracy select,.load-accuracy button {font:inherit;font-size:14px;padding:6px 8px;border:1px solid #94a3b8;border-radius:5px;}
 .load-accuracy select {background:#fff;color:#172033;max-width:100%;}
 .load-accuracy button {background:#dbeafe;color:#164178;cursor:pointer;}

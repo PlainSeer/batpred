@@ -4104,18 +4104,19 @@ chart.render();
         text += """<section class="load-accuracy" aria-label="Load forecast accuracy"><h2>Load forecast accuracy</h2>"""
         text += '<div class="la-status la-{}" role="status">{}</div><p>{}</p>'.format(tone, html_module.escape(headline), html_module.escape(explanation))
         text += '<div class="la-cards">'
+        mode_control = ""
         for label, value in (("Mode", {"off": "Off", "monitor": "Monitoring only", "auto": "Automatic fallback"}[mode]), ("Planning source (last report)" if stale else "Planning source", source), ("Guard recommendation", recommendation)):
             if label == "Mode":
                 field = html_module.escape("select__" + self.prefix + "_load_ml_guard_mode", quote=True)
                 return_chart = chart if chart in ("LoadML", "LoadMLPower") else "LoadML"
-                text += '<div class="la-card"><label class="la-label" for="load-ml-guard-mode">Mode</label><form class="la-mode-form" method="post" action="./config">'
-                text += '<input type="hidden" name="_load_ml_guard_return_chart" value="{}"><select id="load-ml-guard-mode" name="{}">'.format(return_chart, field)
+                mode_control += '<label class="la-label" for="load-ml-guard-mode">Accuracy monitoring mode</label><form class="la-mode-form" method="post" action="./config">'
+                mode_control += '<input type="hidden" name="_load_ml_guard_return_chart" value="{}"><select id="load-ml-guard-mode" name="{}">'.format(return_chart, field)
                 for option, title in (("off", "Off"), ("monitor", "Monitoring only"), ("auto", "Automatic fallback")):
-                    text += '<option value="{}"{}>{}</option>'.format(option, " selected" if option == mode else "", title)
-                text += '</select><button type="submit">Apply mode</button></form><small>Saved immediately; no restart needed. Guard mode does not enable ML for planning.</small></div>'
+                    mode_control += '<option value="{}"{}>{}</option>'.format(option, " selected" if option == mode else "", title)
+                mode_control += '</select><button type="submit">Apply mode</button></form><small>Guard mode does not enable ML for planning. Monitoring only records comparisons without switching sources; Off stops accuracy recording.</small>'
                 continue
             text += '<div class="la-card"><span class="la-label">{}</span><strong>{}</strong></div>'.format(html_module.escape(label), html_module.escape(value))
-        text += '<div class="la-card"><form class="la-source-form" method="post" action="./config">'
+        text += '</div><div class="la-card la-controls"><form class="la-source-form" method="post" action="./config">'
         text += '<input type="hidden" name="_load_ml_guard_return_chart" value="{}">'.format(chart if chart in ("LoadML", "LoadMLPower") else "LoadML")
         text += "<fieldset{}><legend>Planning source choice</legend>".format(" disabled" if mode != "auto" else "")
         for name, title, options, current in (
@@ -4123,12 +4124,16 @@ chart.render();
             ("load_forecast_auto_default", "Default while collecting evidence", DEFAULT_SOURCE_OPTIONS, default),
         ):
             field = html_module.escape("select__" + self.prefix + "_" + name, quote=True)
-            text += '<label for="{0}">{1}</label><select id="{0}" name="{0}">'.format(field, title)
+            text += '<div class="la-source-field"><label for="{0}">{1}</label><select id="{0}" name="{0}">'.format(field, title)
             for option in options:
                 text += '<option value="{}"{}>{}</option>'.format(option, " selected" if option == current else "", SOURCE_LABELS[option])
-            text += "</select>"
-        text += '<button type="submit">Apply source</button></fieldset></form><small>Used in Automatic fallback mode. Automatic is the default choice; Historical is its initial default. Manual choices bypass accuracy qualification, but never availability checks. Explicit learned choices permit planning without editing apps.yaml; the model must be enabled. The default is used only with Automatic selected. Saved without resetting accuracy records.</small></div>'
-        text += "</div><p>Average energy error over the past seven days. Lower is better.</p>"
+            text += "</select></div>"
+        text += '<button type="submit">Apply source</button></fieldset></form><small>Saved immediately; no restart needed. Accuracy records are kept.</small></div>'
+        if mode != "auto":
+            text += "<p>Select Automatic fallback in Advanced monitoring settings to use the source controls.</p>"
+        text += '<details class="la-help"><summary>How source selection works</summary><p>Used in Automatic fallback mode. Automatic is the default choice; Historical is its initial default. Manual choices bypass accuracy qualification, but never availability checks. Explicit learned choices permit planning without editing apps.yaml; the model must be enabled. The default is used only with Automatic selected. Saved without resetting accuracy records.</p></details>'
+        text += '<details class="la-help"><summary>Advanced monitoring settings</summary>{}</details>'.format(mode_control)
+        text += "<p>Average energy error over the past seven days. Lower is better.</p>"
         if three_models:
             text += "<p>All three columns use the same frozen forecast windows and measured household load. Existing neural evidence is retained separately; regression starts its own record.</p>"
             statuses = attributes.get("candidate_status", {})
