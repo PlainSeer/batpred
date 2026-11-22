@@ -166,6 +166,51 @@ class GuardFetchTests(unittest.TestCase):
         self.assertEqual(len(self.base.load_forecast_array), 2)
         self.assertAlmostEqual(self.future_energy(), 0.78, places=3)
 
+    def test_monitoring_counterfactual_is_hourly_and_never_reused_as_a_new_snapshot(self):
+        """ML planning does no extra historical calculation between actual hourly captures."""
+        self.configure(mode="monitor")
+        with patch.object(self.base, "compute_load_forecast_history", wraps=self.base.compute_load_forecast_history) as classic:
+            self.base.fetch_sensor_data(save=True)
+            first_count = len(self.base.load_forecast_guard.records)
+            self.assertEqual(classic.call_count, 1)
+            self.base.now_utc += timedelta(minutes=5)
+            self.base.minutes_now += 5
+            self.configure(mode="monitor")
+            self.base.fetch_sensor_data(save=True)
+            self.assertEqual(classic.call_count, 1)
+            self.assertIsNone(self.base.load_forecast_guard_classic)
+            self.assertEqual(len(self.base.load_forecast_guard.records), first_count)
+            self.base.now_utc += timedelta(hours=1)
+            self.base.minutes_now += 60
+            self.data = {m: 200 - m * 0.02 for m in range(7201)}
+            self.configure(mode="monitor")
+            self.base.fetch_sensor_data(save=True)
+            self.assertEqual(classic.call_count, 2)
+            newest = max(self.base.load_forecast_guard.records, key=lambda row: row["start"])
+            self.assertEqual(newest["start"], int(self.base.now_utc.timestamp() // 60))
+            self.assertAlmostEqual(newest["classic"], newest["duration"] * 0.02, places=3)
+
+    def test_historical_fallback_uses_normal_inday_adjustment(self):
+        """The real fetch path adjusts Historical after a veto and disables adjustment for ML."""
+        original_history = self.base.get_history_wrapper
+
+        def history(*args, **kwargs):
+            """Supply a known yesterday factor without changing any other input history."""
+            if kwargs.get("entity_id") == self.base.prefix + ".load_inday_adjustment":
+                return [[{"state": "150", "last_updated": (self.base.now_utc - timedelta(days=2)).isoformat()}, {"state": "150", "last_updated": self.base.now_utc.isoformat()}]]
+            return original_history(*args, **kwargs)
+
+        self.base.expose_config("calculate_inday_adjustment", True)
+        with patch.object(self.base, "get_history_wrapper", side_effect=history), patch.object(self.base, "inday_yesterday_weight", return_value=1):
+            self.configure()
+            self.base.fetch_sensor_data(save=True)
+            self.assertEqual(self.base.load_forecast_guard_selected, "classic")
+            self.assertAlmostEqual(self.base.load_inday_adjustment, 1.5)
+            self.configure(mode="monitor")
+            self.base.fetch_sensor_data(save=True)
+            self.assertEqual(self.base.load_forecast_guard_selected, "ml")
+            self.assertEqual(self.base.load_inday_adjustment, 1.0)
+
 
 class ThreeModelGuardFetchTests(GuardFetchTests):
     """Run the same full cycles with regression enabled and independently earned selections."""
@@ -218,6 +263,76 @@ class ThreeModelGuardFetchTests(GuardFetchTests):
         self.assertEqual(self.base.load_forecast_guard_selected, "ml")
         self.assertAlmostEqual(self.future_energy(), 1.2)
         self.assertTrue(self.base.load_forecast_guard_regression.fallback)
+
+    def test_regression_brief_outage_recovers_without_erasing_earned_permission(self):
+        """Real automatic planning stops immediately on missing Regression and resumes after a short repair."""
+        self.configure()
+        self.base.fetch_sensor_data(save=True)
+        self.qualify(neural=26, regression=20)
+        self.configure()
+        self.base.fetch_sensor_data(save=True)
+        guard = self.base.load_forecast_guard_regression
+        records = copy.deepcopy(guard.records)
+        regression = self.regression
+        self.regression = {}
+        self.base.load_regression_forecast_problem = "model_unavailable"
+        self.configure()
+        self.assertTrue(self.base.fetch_sensor_data(save=True))
+        self.assertEqual(self.base.load_forecast_guard_selected, "classic")
+        self.assertAlmostEqual(self.future_energy(), 0.6)
+        self.assertFalse(guard.fallback)
+        self.base.now_utc += timedelta(minutes=30)
+        self.base.minutes_now += 30
+        self.regression = regression
+        self.configure()
+        self.assertTrue(self.base.fetch_sensor_data(save=True))
+        self.assertEqual(self.base.load_forecast_guard_selected, "regression")
+        self.assertAlmostEqual(self.future_energy(), 0.48)
+        self.assertIsNone(guard.unavailable_since)
+        self.assertIsNone(guard.blocked_since)
+        for row in records:
+            self.assertIn(row, guard.records)
+
+    def test_regression_hard_failure_cannot_resume_from_old_permission(self):
+        """Invalid Regression data withdraws the grant even if a valid curve reappears quickly."""
+        self.configure()
+        self.base.fetch_sensor_data(save=True)
+        self.qualify(neural=26, regression=20)
+        self.configure()
+        self.base.fetch_sensor_data(save=True)
+        regression = self.regression
+        self.regression = {}
+        self.base.load_regression_forecast_problem = "invalid_forecast"
+        self.configure()
+        self.base.fetch_sensor_data(save=True)
+        self.assertTrue(self.base.load_forecast_guard_regression.fallback)
+        self.regression = regression
+        self.configure()
+        self.base.fetch_sensor_data(save=True)
+        self.assertEqual(self.base.load_forecast_guard_selected, "classic")
+
+    def test_earned_regression_calculates_comparison_only_when_a_snapshot_is_due(self):
+        """An earned Regression plan avoids extra five-minute Historical calculations too."""
+        self.configure()
+        self.base.fetch_sensor_data(save=True)
+        self.qualify(neural=26, regression=20)
+        with patch.object(self.base, "compute_load_forecast_history", wraps=self.base.compute_load_forecast_history) as classic:
+            self.configure()
+            self.base.fetch_sensor_data(save=True)
+            self.assertEqual(self.base.load_forecast_guard_selected, "regression")
+            self.assertEqual(classic.call_count, 0)
+            self.base.now_utc += timedelta(minutes=5)
+            self.base.minutes_now += 5
+            self.configure()
+            self.base.fetch_sensor_data(save=True)
+            self.assertEqual(classic.call_count, 0)
+            self.assertIsNone(self.base.load_forecast_guard_classic)
+            self.assertAlmostEqual(self.future_energy(), 0.48)
+            self.base.now_utc += timedelta(hours=1)
+            self.base.minutes_now += 60
+            self.configure()
+            self.base.fetch_sensor_data(save=True)
+            self.assertEqual(classic.call_count, 1)
 
 
 def run_load_forecast_guard_fetch_tests(my_predbat):

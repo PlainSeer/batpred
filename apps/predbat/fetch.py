@@ -2070,7 +2070,7 @@ class Fetch:
 
         # Load today vs actual
         if self.load_minutes:
-            self.load_inday_adjustment = self.load_today_comparison(self.load_minutes, self.load_forecast, self.car_charging_energy, self.import_today, self.minutes_now, save=save)
+            self.load_inday_adjustment = self.load_today_comparison(self.load_minutes, self.load_forecast, self.car_charging_energy, self.import_today, self.minutes_now, save=save, using_load_ml_forecast=bool(load_ml_forecast))
         else:
             self.load_inday_adjustment = 1.0
 
@@ -4481,10 +4481,11 @@ class Fetch:
 
     def apply_load_forecast_guard(self, observed_ml, selected_ml, regression=None):
         """Apply an optional source veto without losing separately configured forecasts."""
-        classic = self.classic_load_forecast_for_guard()
-        if regression is not None:
+        use_ml, changed = self.update_load_forecast_guard(observed_ml) if regression is None else self.update_load_forecast_guard(observed_ml, regression=regression)
+        cached = self.load_forecast_guard_classic
+        classic = cached[0] if cached is not None else {}
+        if regression is not None and cached is not None:
             self.publish_classic_load_forecast(classic)
-        use_ml, changed = self.update_load_forecast_guard(observed_ml, classic) if regression is None else self.update_load_forecast_guard(observed_ml, classic, regression)
         desired = regression if use_ml and self.load_forecast_guard_selected == "regression" else observed_ml if use_ml and self.load_forecast_guard_selected == "ml" else {}
         if selected_ml and selected_ml is not desired:
             # Remove only the preliminary household model, preserving extra forecasts.
@@ -4551,7 +4552,7 @@ class Fetch:
             total += load
         return total
 
-    def update_load_forecast_guard(self, ml_forecast, classic_forecast, regression=None):
+    def update_load_forecast_guard(self, ml_forecast, classic_forecast=None, regression=None):
         """Record paired forecasts, publish real-world scores and optionally select classic load."""
         import hashlib
         import json
@@ -4571,6 +4572,7 @@ class Fetch:
         guard = self.load_forecast_guard
         if guard is None or guard.fingerprint != fingerprint:
             guard = self.load_forecast_guard = LoadForecastGuard(fingerprint)
+            self.load_forecast_guard_classic_available = None
         storage = self.components.get_component("storage") if self.components else None
         if storage and not guard.loaded:
             try:
@@ -4613,8 +4615,6 @@ class Fetch:
             comparison.advance(now, self.guard_actual_load)
         else:
             guard.advance(now, self.guard_actual_load)
-        if ml_forecast and classic_forecast:
-            guard.capture(now, self.minutes_now, ml_forecast, classic_forecast)
 
         def setting(name, default, low, high):
             """Read bounded numeric thresholds without allowing invalid YAML to stop a plan."""
@@ -4625,13 +4625,52 @@ class Fetch:
                 return default
 
         thresholds = (int(setting("load_ml_guard_min_days", 3, 2, 5)), setting("load_ml_guard_error_kwh", 3.0, 0.1, 100), setting("load_ml_guard_error_percent", 40.0, 1, 1000))
-        reason = guard.judge(now, *thresholds)
         available = bool(ml_forecast)
+        guard.update_availability(now, available, self.load_ml_forecast_problem)
+        reason = guard.judge(now, *thresholds)
         if not available:
-            guard.require_new_evidence(now)
             reason = self.load_ml_forecast_problem
         source_choice, auto_default, requested = source_settings(mode, self.get_arg("load_forecast_source", "auto"), self.get_arg("load_forecast_auto_default", "classic"), self.get_arg("load_ml_source", False))
         judgments = {"ml": reason}
+        if regression is not None:
+            regression_guard.update_availability(now, bool(regression), self.load_regression_forecast_problem)
+            regression_reason = regression_guard.judge(now, *thresholds)
+            if not regression:
+                regression_reason = self.load_regression_forecast_problem
+            judgments["regression"] = regression_reason
+            comparison_recommended = comparison.choose(now, {"ml": available, "regression": bool(regression)}, thresholds[0])
+        if classic_forecast is None:
+            capture_due = (available and guard.last_capture != now // 60) or (bool(regression) and regression_guard.last_capture != now // 60)
+            external_only = self.get_arg("load_forecast_only", False)
+            if mode == "auto":
+                # Probe selection with Historical assumed available to determine
+                # whether this cycle needs a fresh curve for the actual plan.
+                recommendation = comparison_recommended if comparison else "classic" if guard.fallback or not available else "ml"
+                provisional = recommendation if requested else "classic"
+                if provisional == "classic" and external_only:
+                    provisional = "external"
+                provisional, _ = choose_planning_source(
+                    source_choice,
+                    auto_default,
+                    provisional,
+                    recommendation,
+                    {"ml": available, "regression": bool(regression), "classic": True, "external": len(self.load_forecast_array) > int(requested and available)},
+                    judgments,
+                    external_only=external_only,
+                )
+                needs_historical = provisional == "classic"
+            else:
+                needs_historical = not external_only and not (requested and available)
+            if capture_due or needs_historical or self.load_forecast_guard_classic_available is None:
+                classic_forecast = self.classic_load_forecast_for_guard()
+                self.load_forecast_guard_classic_available = bool(classic_forecast)
+            else:
+                classic_forecast = self.load_forecast_guard_classic_available
+        if isinstance(classic_forecast, dict) and classic_forecast:
+            if ml_forecast:
+                guard.capture(now, self.minutes_now, ml_forecast, classic_forecast)
+            if regression:
+                regression_guard.capture(now, self.minutes_now, regression, classic_forecast)
         use_ml = available and not (mode == "auto" and guard.fallback and classic_forecast)
         if guard.fallback and not classic_forecast and available:
             reason = "classic_unavailable"
@@ -4641,14 +4680,7 @@ class Fetch:
             selected = "ml" if use_ml else "classic" if not self.get_arg("load_forecast_only", False) else "external"
         recommended = "classic" if (guard.fallback and classic_forecast) or not available else "ml"
         if regression is not None:
-            if regression and classic_forecast:
-                regression_guard.capture(now, self.minutes_now, regression, classic_forecast)
-            regression_reason = regression_guard.judge(now, *thresholds)
-            if not regression:
-                regression_guard.require_new_evidence(now)
-                regression_reason = self.load_regression_forecast_problem
-            judgments["regression"] = regression_reason
-            recommended = comparison.choose(now, {"ml": available, "regression": bool(regression)}, thresholds[0])
+            recommended = comparison_recommended
             if not classic_forecast and recommended == "classic":
                 recommended = "ml" if available else "regression" if regression else "classic"
             regression_guard.dirty |= recommended != self.load_forecast_guard_recommendation
@@ -4703,6 +4735,9 @@ class Fetch:
                 "candidate_status": ({"ml": "active" if available else self.load_ml_forecast_problem, "regression": "active" if regression else self.load_regression_forecast_problem} if comparison else {}),
                 "model_scores": {"ml": guard.scores(), "regression": regression_guard.scores()} if comparison else {"ml": guard.scores()},
                 "pending_windows": sum(r["actual"] is None for r in guard.records),
+                "permission_retained_during_outage": not available and not guard.fallback,
+                "regression_permission_retained_during_outage": bool(regression_guard) and not regression and not regression_guard.fallback,
+                "base_load_w": self.base_load * 1000,
             },
             app="load_ml",
         )

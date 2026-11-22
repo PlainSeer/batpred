@@ -742,6 +742,7 @@ class PredBat(hass.Hass, Octopus, Energidataservice, Stromligning, Fetch, Plan, 
         self.load_forecast_guard_selected = None
         self.load_ml_forecast_problem = "ml_unavailable"
         self.load_forecast_guard_classic = None
+        self.load_forecast_guard_classic_available = None
         self.load_forecast_guard_fallback = True
         self.load_forecast_guard_regression = None
         self.load_forecast_guard_recommendation = "classic"
