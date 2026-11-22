@@ -208,6 +208,146 @@ class ThreeModelTests(unittest.TestCase):
             base.update_load_forecast_guard(curve(0.01), curve(0.01), curve(0.01))
         self.assertFalse(storage.saves)
 
+    def saved_actual_case(self, neural_actual=20.0, regression_actual=None):
+        """Prepare separate saved checkpoints for the same completed UTC windows."""
+        base = self.base()
+        now = int(base.now_utc.timestamp() // 60)
+        storage = KeyStorage()
+        for guard, actual, prediction, key in (
+            (base.load_forecast_guard, neural_actual, 20.4044, "load_forecast_accuracy"),
+            (base.load_forecast_guard_regression, regression_actual, 22.1299, "load_forecast_regression_accuracy"),
+        ):
+            guard.records = [{"start": now - duration, "duration": duration, "ml": prediction * duration / 1440, "classic": 22.279 * duration / 1440, "actual": actual * duration / 1440 if actual is not None else None} for duration in (60, 480, 1440)]
+            storage.values[key] = copy.deepcopy(guard.serialise())
+        restarted = GuardBase()
+        restarted.args["load_ml_guard_mode"] = "auto"
+        restarted.components = SimpleNamespace(get_component=lambda name: storage)
+        return restarted, storage
+
+    def test_restart_reuses_completed_actual_from_either_saved_checkpoint(self):
+        """A pending copy reuses its partner's frozen actual instead of remeasuring settled HA history."""
+        for neural, regression in ((20.0, None), (None, 20.0)):
+            base, storage = self.saved_actual_case(neural, regression)
+            with patch.object(base, "guard_actual_load", return_value=19.992) as reader:
+                base.update_load_forecast_guard(curve(0.01), curve(0.01), curve(0.01))
+            reader.assert_not_called()
+            scores = base.dashboard["sensor.predbat_load_ml_accuracy"]["attributes"]["scores"]
+            for horizon in ("1h", "8h", "24h"):
+                self.assertEqual(scores[horizon]["samples"], 1)
+            self.assertEqual(scores["24h"]["ml_mae_kwh"], 0.4044)
+            self.assertEqual(scores["24h"]["regression_mae_kwh"], 2.1299)
+            for key in ("load_forecast_accuracy", "load_forecast_regression_accuracy"):
+                self.assertTrue(all(row["actual"] is not None for row in storage.values[key]["records"] if row["start"] < int(base.now_utc.timestamp() // 60)))
+
+    def test_existing_actual_conflict_is_repaired_without_changing_frozen_forecasts(self):
+        """Legacy conflicts use the existing neural benchmark and remain matched after another restart."""
+        base, storage = self.saved_actual_case(20.0, 19.992)
+        frozen = {key: [{k: v for k, v in row.items() if k != "actual"} for row in value["records"]] for key, value in storage.values.items()}
+        with patch.object(base, "guard_actual_load", side_effect=AssertionError("Remeasured frozen actual")):
+            base.update_load_forecast_guard(curve(0.01), curve(0.01), curve(0.01))
+        for key, originals in frozen.items():
+            for original in originals:
+                restored = next(row for row in storage.values[key]["records"] if (row["start"], row["duration"]) == (original["start"], original["duration"]))
+                self.assertEqual({k: v for k, v in restored.items() if k != "actual"}, original)
+                self.assertAlmostEqual(restored["actual"], 20 * restored["duration"] / 1440)
+        restarted = GuardBase()
+        restarted.args.update(base.args)
+        restarted.components = base.components
+        with patch.object(restarted, "guard_actual_load", side_effect=AssertionError("Remeasured after second restart")):
+            restarted.update_load_forecast_guard(curve(0.01), curve(0.01), curve(0.01))
+        self.assertEqual(restarted.dashboard["sensor.predbat_load_ml_accuracy"]["attributes"]["scores"]["24h"]["samples"], 1)
+        self.assertEqual(restarted.load_forecast_guard_selected, "classic")
+        self.assertEqual(set(storage.values), {"load_forecast_accuracy", "load_forecast_regression_accuracy"})
+
+    def test_new_snapshots_are_saved_without_waiting_another_hour(self):
+        """An immediately following install can restore both newly captured forecast snapshots."""
+        base = self.base()
+        storage = KeyStorage()
+        base.components = SimpleNamespace(get_component=lambda name: storage)
+        now = int(base.now_utc.timestamp() // 60)
+        for guard in (base.load_forecast_guard, base.load_forecast_guard_regression):
+            guard.loaded, guard.last_save = True, now - 5
+        base.update_load_forecast_guard(curve(0.01), curve(0.01), curve(0.01))
+        for key in ("load_forecast_accuracy", "load_forecast_regression_accuracy"):
+            self.assertEqual(len(storage.values.get(key, {}).get("records", [])), 3)
+        written = list(storage.saves)
+        base.update_load_forecast_guard(curve(0.01), curve(0.01), curve(0.01))
+        self.assertEqual(storage.saves, written)
+
+    def test_newly_scored_actuals_are_saved_even_after_a_recent_checkpoint(self):
+        """Maturing a window persists the shared actual promptly, with only one measurement per interval."""
+        base, storage = self.saved_actual_case(None, None)
+        base.update_load_forecast_guard({}, {}, {})
+        for guard in (base.load_forecast_guard, base.load_forecast_guard_regression):
+            for row in guard.records:
+                row["actual"] = None
+            guard.dirty = False
+            guard.last_save = int(base.now_utc.timestamp() // 60) - 5
+        storage.saves.clear()
+        with patch.object(base, "guard_actual_load", return_value=0.0) as reader:
+            base.update_load_forecast_guard(curve(0.01), curve(0.01), curve(0.01))
+        self.assertEqual(reader.call_count, 3)
+        self.assertEqual(set(storage.saves), {"load_forecast_accuracy", "load_forecast_regression_accuracy"})
+        for key in storage.saves:
+            self.assertTrue(all(row["actual"] == 0 for row in storage.values[key]["records"] if row["start"] < int(base.now_utc.timestamp() // 60)))
+
+    def test_missing_actuals_stay_pending_and_zero_is_a_valid_shared_reading(self):
+        """A temporarily missing measurement is retried, never replaced with a forecast or a false zero."""
+        base, _ = self.saved_actual_case(None, None)
+        with patch.object(base, "guard_actual_load", return_value=None) as reader:
+            base.update_load_forecast_guard(curve(0.01), curve(0.01), curve(0.01))
+        self.assertEqual(reader.call_count, 3)
+        self.assertEqual(base.dashboard["sensor.predbat_load_ml_accuracy"]["attributes"]["scores"]["24h"]["samples"], 0)
+        with patch.object(base, "guard_actual_load", return_value=0.0) as reader:
+            base.update_load_forecast_guard(curve(0.01), curve(0.01), curve(0.01))
+        self.assertEqual(reader.call_count, 3)
+        self.assertEqual(base.dashboard["sensor.predbat_load_ml_accuracy"]["attributes"]["scores"]["24h"]["samples"], 1)
+
+    def test_different_historical_baselines_are_still_excluded(self):
+        """Sharing actual consumption does not relax the identical-forecast-window comparison rules."""
+        base, storage = self.saved_actual_case(20.0, None)
+        for row in storage.values["load_forecast_regression_accuracy"]["records"]:
+            row["classic"] += 1
+        base.update_load_forecast_guard(curve(0.01), curve(0.01), curve(0.01))
+        self.assertEqual(base.dashboard["sensor.predbat_load_ml_accuracy"]["attributes"]["scores"]["24h"]["samples"], 0)
+
+    def test_shared_actuals_never_cross_household_definitions_or_different_periods(self):
+        """Only the identical household UTC window can reuse another model's measured actual."""
+        now = 100000
+        for fingerprint, shift in (("other:regression:4", 0), ("house:regression:4", 5)):
+            neural, regression = LoadForecastGuard("house"), LoadForecastGuard(fingerprint)
+            neural.records = [{"start": now - 1440, "duration": 1440, "ml": 20, "classic": 25, "actual": None}]
+            regression.records = [{"start": now - 1440 - shift, "duration": 1440, "ml": 20, "classic": 25, "actual": None}]
+            reader = unittest.mock.Mock(side_effect=[20, 19])
+            comparison = LoadForecastComparison(neural, regression)
+            comparison.advance(now, reader)
+            self.assertEqual(reader.call_count, 2)
+            self.assertEqual(neural.records[0]["actual"], 20)
+            self.assertEqual(regression.records[0]["actual"], 19)
+            self.assertEqual(comparison.scores()["24h"]["samples"], 0)
+
+    def test_partial_save_failure_reuses_the_other_checkpoint_after_restart(self):
+        """A failed regression write cannot lose the existing pair's actual when the neural write succeeds."""
+        base, storage = self.saved_actual_case(20.0, None)
+        original_save = storage.save
+
+        async def fail_regression(module, key, value, **kwargs):
+            """Fail one evidence key while retaining the independent successful checkpoint."""
+            if key == "load_forecast_regression_accuracy":
+                raise RuntimeError("temporary write failure")
+            return await original_save(module, key, value, **kwargs)
+
+        with patch.object(storage, "save", side_effect=fail_regression):
+            base.update_load_forecast_guard(curve(0.01), curve(0.01), curve(0.01))
+        self.assertTrue(any("temporary write failure" in message for message in base.logs))
+        self.assertIsNone(storage.values["load_forecast_regression_accuracy"]["records"][0]["actual"])
+        restarted = GuardBase()
+        restarted.args.update(base.args)
+        restarted.components = base.components
+        with patch.object(restarted, "guard_actual_load", side_effect=AssertionError("Read actual after partial checkpoint")):
+            restarted.update_load_forecast_guard(curve(0.01), curve(0.01), curve(0.01))
+        self.assertEqual(restarted.dashboard["sensor.predbat_load_ml_accuracy"]["attributes"]["scores"]["24h"]["samples"], 1)
+
     def test_regression_version_change_keeps_neural_evidence(self):
         """A changed regression algorithm starts fresh without destroying compatible neural scores."""
         base = self.base()

@@ -210,6 +210,40 @@ class LoadForecastComparison:
         self.guards = {"ml": neural, "regression": regression}
         self.selected = selected if selected in ("classic", "ml", "regression") else "classic"
 
+    def advance(self, now, actual_reader):
+        """Score compatible models against one frozen measured actual per UTC window.
+
+        Either saved checkpoint can supply a completed actual to a pending partner.
+        For legacy conflicts, preserve the established neural benchmark. Forecasts
+        and historical baselines are never rewritten; matched() still checks them.
+        """
+        neural, regression = self.guards["ml"], self.guards["regression"]
+        if not regression.fingerprint.startswith(neural.fingerprint + ":regression:"):
+            for guard in self.guards.values():
+                guard.advance(now, actual_reader)
+            return
+        actuals = {}
+        for guard in self.guards.values():
+            for record in guard.records:
+                if now - RETENTION_MINUTES <= record["start"] and record["start"] + record["duration"] <= now and valid_energy(record["actual"]):
+                    actuals.setdefault((record["start"], record["duration"]), record["actual"])
+
+        def read_once(start, duration):
+            """Reuse a frozen observation or read each missing interval once this cycle."""
+            key = (start, duration)
+            if key not in actuals:
+                value = actual_reader(start, duration)
+                actuals[key] = round(value, 6) if valid_energy(value) else None
+            return actuals[key]
+
+        for guard in self.guards.values():
+            for record in guard.records:
+                key = (record["start"], record["duration"])
+                if record["actual"] is not None and key in actuals and record["actual"] != actuals[key]:
+                    record["actual"] = actuals[key]
+                    guard.dirty = True
+            guard.advance(now, read_once)
+
     def matched(self, duration):
         """Return only pairs with the same issue time, actual energy and historical forecast."""
         neural = {(r["start"], r["duration"]): r for r in self.guards["ml"].records if r["actual"] is not None}

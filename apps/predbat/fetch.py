@@ -4587,7 +4587,32 @@ class Fetch:
                         guard.loaded = True
             except Exception as exc:
                 self.log("Warn: Load forecast accuracy: could not read evidence: {}".format(exc))
-        guard.advance(now, self.guard_actual_load)
+        comparison = None
+        regression_guard = None
+        if regression is not None:
+            identity = fingerprint + ":regression:" + str(REGRESSION_MODEL_VERSION)
+            regression_guard = self.load_forecast_guard_regression
+            if regression_guard is None or regression_guard.fingerprint != identity:
+                regression_guard = self.load_forecast_guard_regression = LoadForecastGuard(identity)
+                self.load_forecast_guard_recommendation = "classic"
+            if storage and not regression_guard.loaded:
+                try:
+                    stored = run_async(storage.load("predbat", "load_forecast_regression_accuracy"))
+                    if isinstance(stored, dict):
+                        regression_guard.restore(stored, now)
+                        if stored.get("fingerprint") == identity:
+                            self.load_forecast_guard_recommendation = stored.get("selection", "classic")
+                        regression_guard.loaded = True
+                    elif stored is None:
+                        regression_guard.empty_reads.append(now)
+                        if len(set(regression_guard.empty_reads)) >= 3 and now - regression_guard.empty_reads[0] >= 10:
+                            regression_guard.loaded = True
+                except Exception as exc:
+                    self.log("Warn: Regression accuracy storage read failed: {}".format(exc))
+            comparison = LoadForecastComparison(guard, regression_guard, self.load_forecast_guard_recommendation)
+            comparison.advance(now, self.guard_actual_load)
+        else:
+            guard.advance(now, self.guard_actual_load)
         if ml_forecast and classic_forecast:
             guard.capture(now, self.minutes_now, ml_forecast, classic_forecast)
 
@@ -4615,29 +4640,7 @@ class Fetch:
         else:
             selected = "ml" if use_ml else "classic" if not self.get_arg("load_forecast_only", False) else "external"
         recommended = "classic" if (guard.fallback and classic_forecast) or not available else "ml"
-        comparison = None
-        regression_guard = None
         if regression is not None:
-            identity = fingerprint + ":regression:" + str(REGRESSION_MODEL_VERSION)
-            regression_guard = self.load_forecast_guard_regression
-            if regression_guard is None or regression_guard.fingerprint != identity:
-                regression_guard = self.load_forecast_guard_regression = LoadForecastGuard(identity)
-                self.load_forecast_guard_recommendation = "classic"
-            if storage and not regression_guard.loaded:
-                try:
-                    stored = run_async(storage.load("predbat", "load_forecast_regression_accuracy"))
-                    if isinstance(stored, dict):
-                        regression_guard.restore(stored, now)
-                        if stored.get("fingerprint") == identity:
-                            self.load_forecast_guard_recommendation = stored.get("selection", "classic")
-                        regression_guard.loaded = True
-                    elif stored is None:
-                        regression_guard.empty_reads.append(now)
-                        if len(set(regression_guard.empty_reads)) >= 3 and now - regression_guard.empty_reads[0] >= 10:
-                            regression_guard.loaded = True
-                except Exception as exc:
-                    self.log("Warn: Regression accuracy storage read failed: {}".format(exc))
-            regression_guard.advance(now, self.guard_actual_load)
             if regression and classic_forecast:
                 regression_guard.capture(now, self.minutes_now, regression, classic_forecast)
             regression_reason = regression_guard.judge(now, *thresholds)
@@ -4645,7 +4648,6 @@ class Fetch:
                 regression_guard.require_new_evidence(now)
                 regression_reason = self.load_regression_forecast_problem
             judgments["regression"] = regression_reason
-            comparison = LoadForecastComparison(guard, regression_guard, self.load_forecast_guard_recommendation)
             recommended = comparison.choose(now, {"ml": available, "regression": bool(regression)}, thresholds[0])
             if not classic_forecast and recommended == "classic":
                 recommended = "ml" if available else "regression" if regression else "classic"
@@ -4704,14 +4706,16 @@ class Fetch:
             },
             app="load_ml",
         )
-        if storage and guard.loaded and guard.dirty and (guard.last_save is None or now - guard.last_save >= 60 or previous != selected):
+        # Persist changed snapshots and measured actuals promptly, so a restart
+        # cannot restore one model from an older, incomplete hourly checkpoint.
+        if storage and guard.loaded and guard.dirty:
             try:
                 if run_async(storage.save("predbat", "load_forecast_accuracy", guard.serialise(), format="json", expiry=self.now_utc + timedelta(days=9))):
                     guard.dirty = False
                     guard.last_save = now
             except Exception as exc:
                 self.log("Warn: Load forecast accuracy: could not save evidence: {}".format(exc))
-        if storage and regression_guard and regression_guard.loaded and regression_guard.dirty and (regression_guard.last_save is None or now - regression_guard.last_save >= 60 or previous != selected):
+        if storage and regression_guard and regression_guard.loaded and regression_guard.dirty:
             try:
                 data = {**regression_guard.serialise(), "selection": recommended}
                 if run_async(storage.save("predbat", "load_forecast_regression_accuracy", data, format="json", expiry=self.now_utc + timedelta(days=9))):

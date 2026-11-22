@@ -2186,6 +2186,13 @@ holdout errors. The accuracy panel's one-hour, eight-hour and daily errors use t
 same kWh units for all three. Regression coefficients and its qualification evidence
 use separate Storage keys; no neural weights or history files are overwritten.
 
+For shared accuracy windows, both learned models reuse the same frozen measured
+consumption. Reloads recover that reading from either evidence checkpoint. Existing
+conflicting readings use the established neural benchmark; the frozen forecasts stay
+unchanged. Different household definitions or historical baselines are not combined.
+Changed evidence is saved promptly, including new snapshots and completed actuals,
+so installing an update does not require waiting for another hourly checkpoint.
+
 With LoadML enabled, `load_ml_guard_mode: monitor` (the default) records ML and classic
 household-load forecasts before consumption occurs. It works with `load_ml_source: false`
 as well as true. Monitoring does not veto a valid ML forecast. Set the mode to `off` to
