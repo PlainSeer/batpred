@@ -2168,77 +2168,24 @@ For a detailed explanation of how the neural network works and comprehensive con
 
 #### Measured forecast accuracy and optional fallback (load_ml)
 
-With LoadML enabled, this fork also runs a lightweight **regression** candidate alongside
-the neural network and historical forecast. It uses the same prepared household data,
-including the same measured EV and iBoost exclusions. No additional apps.yaml entry is
-needed. Set `load_ml_regression_enable: false` to return to the two-model comparison.
+This fork compares neural **LoadML** and the configured **Historical** forecasts
+against the same later measured household load. The compact accuracy panel has three
+summary cards and a seven-day error table. **Forecast settings** is collapsed by default
+and contains the existing source, automatic-default and guard-mode controls.
+The accuracy leader summarises the displayed one-hour, eight-hour and 24-hour checks;
+it is separate from the stricter automatic planning qualification described below.
 
-<!-- cspell:ignore Shedimus -->
+Regression has been removed. Its training, forecasts, source options and chart series
+no longer run. Saved Regression choices migrate to **Automatic** with **Historical**
+as the default. An old `load_ml_regression_enable` YAML entry is accepted but ignored
+and may be removed. Existing neural/Historical evidence, including frozen actual
+readings and pending windows, retains its Storage key, fingerprint and format.
+Neural weights and household history are not reset. Retired Regression stores are
+left untouched and unused.
 
-Regression is based on [the LoadReg proposal by Shedimus](https://github.com/springfall2008/batpred/discussions/6242)
-and the implementation at commit `0e4958c7c248dbcf800bc172441f04c5ed5df7bc`. It predicts
-48 hours directly in half-hour slots from a weekly household profile, temperature
-effects and recent two-hour and daily load changes. The weekly profile has a fixed
-weight of one. Temperature uses a generic heat-pump efficiency curve, separate local
-night/day/evening heating effects and a daily-temperature term. Negative heating
-slopes are removed independently during each fit. The output
-is converted to five-minute cumulative kWh without adding energy at the forecast origin.
-It needs at least 10 days of complete history. Its holdout is the latest 48 hours;
-the validation fit and its heating-term selection exclude those held-out load values.
-The final model is then fitted on all available history. This algorithm version
-refits the regression coefficients and starts new regression accuracy evidence;
-consumption history, neural weights and compatible neural evidence are retained.
-Normal restarts and routine retraining do not reset the accuracy record.
-After an upgrade, a regression sensor retained by HA is ignored until it reports
-the current model version, preventing old predictions from entering new evidence.
-
-The existing **Monitoring only / Automatic fallback / Off** selector still applies.
-In Automatic mode, `load_ml_source: true` permits either learned model to earn planning
-selection. `load_ml_source: false` keeps planning on historical (or an explicitly
-configured external-only forecast), while all candidates can still be monitored.
-Monitoring and Off preserve the existing neural source choice; they never choose
-regression for planning. This feature does not change iBoost or inverter controls.
-
-Each learned candidate needs its **own** three recent independent daily wins against
-historical on both eight-hour and 24-hour windows, with the margins described below.
-Adding regression preserves existing compatible neural evidence but gives regression
-no inherited permission. When both candidates qualify, their matched eight-hour and
-24-hour energy errors rank them. An existing qualified selection is retained unless
-the challenger beats it by at least 20% and 0.25 kWh per day in every required window
-on both horizons. Missing forecasts or evidence and sustained deterioration return
-selection to an available qualified candidate or historical. Every actual source
-change requests a new battery plan. An unavailable historical forecast is reported
-explicitly; valid candidate data is retained as a last resort rather than creating
-an empty load forecast.
-
-The accuracy panel compares **all three forecasts over the same frozen intervals**.
-Its matched-window count starts with the new regression observations; older neural
-observations remain in `model_scores` and still count towards neural qualification.
-The existing LoadML chart adds regression and historical future curves. The raw neural
-forecast and its model files stay separate and retain their existing names.
-
-Additional entities:
-
-- `sensor.predbat_load_regression_forecast`: candidate status and five-minute `results`;
-  its `breakdown` explains the contribution of each term per half-hour.
-- `sensor.predbat_load_regression_stats`: candidate weights, training time, household
-  total, any `heat_dropped` terms and holdout errors labelled
-  `mae_kwh_per_30min` / `bias_kwh_per_30min`.
-- `sensor.predbat_load_historical_forecast`: the counterfactual historical curve,
-  anchored to today's measured household load after the configured exclusions.
-
-Prefixes follow the configured instance prefix. Holdout errors from the neural model
-are per five minutes, and must not be compared numerically with regression's half-hour
-holdout errors. The accuracy panel's one-hour, eight-hour and daily errors use the
-same kWh units for all three. Regression coefficients and its qualification evidence
-use separate Storage keys; no neural weights or history files are overwritten.
-
-For shared accuracy windows, both learned models reuse the same frozen measured
-consumption. Reloads recover that reading from either evidence checkpoint. Existing
-conflicting readings use the established neural benchmark; the frozen forecasts stay
-unchanged. Different household definitions or historical baselines are not combined.
-Changed evidence is saved promptly, including new snapshots and completed actuals,
-so installing an update does not require waiting for another hourly checkpoint.
+The Historical future curve remains on the LoadML chart, anchored to today's measured
+household load after configured EV and iBoost exclusions. Changed evidence is saved
+promptly, so restarting does not require waiting for an hourly checkpoint.
 
 With LoadML enabled, `load_ml_guard_mode: monitor` (the default) records ML and classic
 household-load forecasts before consumption occurs. It works with `load_ml_source: false`
@@ -2246,7 +2193,7 @@ as well as true. Monitoring does not veto a valid ML forecast. Set the mode to `
 disable recording, or `auto` to select historical first and require ML to earn selection.
 
 Change the mode directly in the accuracy panel on **Charts → LoadML / LoadMLPower**
-using **Apply mode**, or use **Config → LoadML forecast guard mode**. These controls are shown only when LoadML is enabled. Both controls
+under **Forecast settings** using **Apply mode**, or use **Config → LoadML forecast guard mode**. These controls are shown only when LoadML is enabled. Both controls
 use the same saved select (`select.predbat_load_ml_guard_mode`, with your own prefix).
 Choices are **Off**, **Monitoring only**, and **Automatic fallback**. Changes are saved
 immediately and request a new plan without restarting PredBat. They do not change
@@ -2284,11 +2231,11 @@ limits, not warning or fallback thresholds. The absolute limit scales with the w
 duration; meeting either the absolute or percentage limit satisfies that cap. The
 relative-improvement requirements must still be met on both horizons.
 
-On the three-model fork, **Planning source choice** on either LoadML chart or Config
-offers **Automatic** (initial choice), **Historical**, **LoadML**, and **Regression**.
+**Planning source choice** under Forecast settings on either LoadML chart or Config
+offers **Automatic** (initial choice), **Historical**, and **LoadML**.
 These controls apply in **Automatic fallback** mode. Manual choices bypass accuracy
 qualification, but an unavailable, stale or invalid candidate still falls back to a
-usable source. All three forecasts continue to be recorded and compared.
+usable source. Both forecasts continue to be recorded and compared.
 
 With **Automatic** selected, **Default while collecting evidence** chooses the initial
 source (Historical by default). A learned default is provisional: an earned winner
@@ -2308,11 +2255,11 @@ selection. Recovery requires the same clear wins on both horizons, using only fo
 issued after selection was withdrawn. Retraining alone cannot grant permission.
 
 Temporary missing, unavailable, initialising, stale or short forecast data selects
-an available qualified alternative or Historical immediately in Automatic mode, but retains an already earned grant for up
+Historical immediately in Automatic mode, but retains an already earned grant for up
 to two hours. Returning with valid data within that period does not require another
 three-day qualification. The outage timer survives restarts. A prolonged outage, a hard
 validation failure, changed load definitions, stale comparison evidence or demonstrated
-poor performance still withdraws permission. Grace never qualifies an unproven model. Both learned candidates have independent outage timers.
+poor performance still withdraws permission. Grace never qualifies an unproven model.
 Historical planning receives its normal in-day adjustment when enabled; learned-model planning
 continues to omit that adjustment.
 
@@ -2340,7 +2287,7 @@ older than an hour, or less than 24 hours of remaining coverage cannot supply ML
 even if the sensor retains old `results`. Explicit `load_forecast_only` and separately
 configured `load_forecast` sources remain respected.
 
-All three scores use the unadjusted household forecast, before in-day adjustment, manual scaling and dynamic load
+Both scores use the unadjusted household forecast, before in-day adjustment, manual scaling and dynamic load
 adjustments. Actuals come from the main load counter after its normal power/history fill,
 with the same measured EV and iBoost exclusions as the classic forecast. An EV outside
 the house-load measurement is not subtracted again. Missing counter coverage and

@@ -25,7 +25,6 @@ from datetime import datetime, timezone, timedelta
 from component_base import ComponentBase
 from utils import get_now_from_cumulative, dp2, dp4, minute_data
 from load_predictor import LoadPredictor, MODEL_VERSION
-from load_regression_forecast import RegressionForecast
 from const import TIME_FORMAT, PREDICT_STEP
 import json
 import traceback
@@ -136,7 +135,6 @@ class LoadMLComponent(ComponentBase):
 
         # Initialise predictor
         self._init_predictor()
-        self.regression_forecaster = RegressionForecast(self)
 
     def _init_predictor(self):
         """Initialise or reinitialise the predictor."""
@@ -793,11 +791,6 @@ class LoadMLComponent(ComponentBase):
             self.log("ML Component: Insufficient data ({:.1f} days, need {})".format(self.load_data_age_days, self.ml_min_days))
             return True
 
-        if should_fetch and self.get_arg("load_ml_regression_enable", True):
-            if not hasattr(self, "regression_forecaster"):
-                self.regression_forecaster = RegressionForecast(self)
-            await self.regression_forecaster.update()
-
         if is_initial:
             if should_train:
                 self.log("ML Component: Starting initial training")
@@ -840,8 +833,6 @@ class LoadMLComponent(ComponentBase):
                     if stale_minutes >= PREDICT_STEP:
                         self.log("ML Component: Data is {:.0f} minutes stale after training, re-fetching before prediction".format(stale_minutes))
                         await self._do_fetch()
-                        if self.get_arg("load_ml_regression_enable", True):
-                            await self.regression_forecaster.update()
 
                 # Update model validity status
                 self._update_model_status()

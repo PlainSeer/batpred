@@ -48,7 +48,7 @@ class WebLoadMLAccuracyTests(unittest.TestCase):
         self.assertIn("Automatic mode starts with historical", html)
         self.assertIn("only permits LoadML after it earns selection", html)
         self.assertIn("Collecting evidence", html)
-        self.assertIn('<span class="la-label">Planning source</span><strong>Historical forecast</strong>', html)
+        self.assertIn('<span class="la-label">Planning source</span><strong>Historical</strong>', html)
 
     def test_qualification_and_historical_preference_are_explicit(self):
         """The page distinguishes a clear earned advantage from insufficient improvement."""
@@ -96,9 +96,9 @@ class WebLoadMLAccuracyTests(unittest.TestCase):
         self.assertIn("2.50 kWh", html)
         self.assertIn("0.80 kWh", html)
         self.assertIn("40 completed windows", html)
-        self.assertIn("<td>Historical</td>", html)
-        self.assertIn("<td>LoadML</td>", html)
-        self.assertIn("<td>Similar</td>", html)
+        self.assertIn('class="la-winner">Historical</span>', html)
+        self.assertIn('class="la-winner">LoadML</span>', html)
+        self.assertIn('class="la-neutral">Similar</span>', html)
 
     def test_monitor_warning_does_not_claim_a_switch(self):
         """An ML-selected monitor report warns while honestly showing ML still supplies planning."""
@@ -114,7 +114,7 @@ class WebLoadMLAccuracyTests(unittest.TestCase):
         html = accuracy_web(sample_attributes("ml_worse_than_classic"), mode="auto").get_load_ml_accuracy_html()
         self.assertIn("Historical fallback active", html)
         self.assertIn("Automatic fallback", html)
-        self.assertIn('<span class="la-label">Planning source</span><strong>Historical forecast</strong>', html)
+        self.assertIn('<span class="la-label">Planning source</span><strong>Historical</strong>', html)
 
     def test_stale_report_is_not_presented_as_current(self):
         """Old reports show their age problem, not an apparently healthy live source."""
@@ -165,6 +165,28 @@ class WebLoadMLAccuracyTests(unittest.TestCase):
         web.get_load_ml_accuracy_html()
         self.assertEqual(attrs, original)
         self.assertEqual(web.base.args, before)
+
+    def test_compact_layout_keeps_heading_and_settings_together(self):
+        """Three summary cards and collapsed controls leave room for the existing chart."""
+        html = accuracy_web(sample_attributes(), mode="auto").get_load_ml_accuracy_html()
+        self.assertEqual(html.count('class="la-card"'), 3)
+        self.assertIn('<div class="la-panel-heading"><h2>Forecast accuracy · Last 7 days</h2>', html)
+        self.assertIn('<details class="la-settings"><summary>Forecast settings</summary>', html)
+        self.assertNotIn('<details class="la-settings" open', html)
+        self.assertIn('name="select__predbat_load_forecast_source"', html)
+        self.assertIn('name="select__predbat_load_ml_guard_mode"', html)
+        self.assertNotIn("Regression", html)
+
+    def test_leader_is_separate_from_planning_permission(self):
+        """One favourable check cannot imply that a learned model has earned planning."""
+        attrs = sample_attributes("measuring", "classic")
+        attrs["scores"] = {"1h": {"samples": 1, "ml_mae_kwh": 0.1, "classic_mae_kwh": 0.3}}
+        html = accuracy_web(attrs, mode="auto").get_load_ml_accuracy_html()
+        self.assertIn("LoadML · 1 of 1 checks", html)
+        self.assertIn('<span class="la-label">Planning source</span><strong>Historical</strong>', html)
+        self.assertIn("Collecting evidence", html)
+        attrs["scores"]["8h"] = {"samples": 1, "ml_mae_kwh": 0.3, "classic_mae_kwh": 0.1}
+        self.assertIn("Mixed results", accuracy_web(attrs).get_load_ml_accuracy_html())
 
 
 def run_web_load_ml_accuracy_tests(my_predbat=None):

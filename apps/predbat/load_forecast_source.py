@@ -5,8 +5,8 @@
 # -----------------------------------------------------------------------------
 """Planning-source preferences, independent of model training and accuracy evidence."""
 
-SOURCE_LABELS = {"auto": "Automatic", "classic": "Historical", "ml": "LoadML", "regression": "Regression"}
-DEFAULT_SOURCE_OPTIONS = ("classic", "ml", "regression")
+SOURCE_LABELS = {"auto": "Automatic", "classic": "Historical", "ml": "LoadML"}
+DEFAULT_SOURCE_OPTIONS = ("classic", "ml")
 
 
 def source_settings(mode, choice, default, configured_ml):
@@ -17,7 +17,7 @@ def source_settings(mode, choice, default, configured_ml):
     if mode == "auto":
         if choice == "classic":
             requested = False
-        elif choice in ("ml", "regression") or (choice == "auto" and default in ("ml", "regression")):
+        elif choice == "ml" or (choice == "auto" and default == "ml"):
             requested = True
     return choice, default, requested
 
@@ -37,7 +37,7 @@ def choose_planning_source(choice, default, selected, recommended, available, ju
             return "classic"
         if external_only and available.get("external"):
             return "external"
-        for model in (selected, recommended, "ml", "regression", "classic"):
+        for model in (selected, recommended, "ml", "classic"):
             if available.get(model):
                 return model
         return selected
@@ -45,11 +45,11 @@ def choose_planning_source(choice, default, selected, recommended, available, ju
     if choice != "auto":
         allowed = bool(available.get(choice)) and (choice != "classic" or not external_only)
         return (choice, "manual") if allowed else (fallback(), "manual_unavailable")
-    if recommended in ("ml", "regression") and available.get(recommended):
+    if recommended == "ml" and available.get(recommended):
         return selected, "automatic"
-    if default in ("ml", "regression"):
+    if default == "ml":
         if not available.get(default):
             return fallback(), "default_unavailable"
-        if judgments.get(default) in ("measuring", "ml_earned", "regression_earned"):
+        if judgments.get(default) in ("measuring", "ml_earned"):
             return default, "automatic_default"
     return selected, "automatic"

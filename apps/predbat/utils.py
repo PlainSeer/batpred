@@ -301,7 +301,6 @@ class MinuteArray:
 DEBUG_EXCLUDE_LIST = [
     "load_forecast_guard_classic",  # Transient per-fetch forecast and filtered-history cache.
     "load_forecast_guard",  # Runtime evidence helper; its public summary is on load_ml_accuracy.
-    "load_forecast_guard_regression",
     "ha_interface",
     "components",
     "coordinator",

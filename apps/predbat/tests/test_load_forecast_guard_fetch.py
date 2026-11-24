@@ -42,7 +42,6 @@ class GuardFetchTests(unittest.TestCase):
             "load_ml_enable": True,
             "load_ml_source": True,
             "load_ml_guard_mode": "auto",
-            "load_ml_regression_enable": False,
             "days_previous": [1, 2, 3],
             "days_previous_auto": True,
             "rates_import": [{"rate": 10}],
@@ -212,132 +211,9 @@ class GuardFetchTests(unittest.TestCase):
             self.assertEqual(self.base.load_inday_adjustment, 1.0)
 
 
-class ThreeModelGuardFetchTests(GuardFetchTests):
-    """Run the same full cycles with regression enabled and independently earned selections."""
-
-    def setUp(self):
-        """Use an independent regression output while sharing the actual fetch/config path."""
-        super().setUp()
-        self.base.args["load_ml_regression_enable"] = True
-        self.base.load_forecast_guard_regression = None
-        self.base.load_forecast_guard_fallback = True
-        self.base.load_forecast_guard_recommendation = "classic"
-        self.regression = {m: m * 0.008 for m in range(5000)}
-        self.base.fetch_ml_load_forecast.side_effect = lambda *args, **kwargs: self.regression if kwargs.get("regression") else self.ml
-
-    def qualify(self, neural, regression):
-        """Give the two candidates separate matched observations from independent past days."""
-        from tests.test_load_forecast_guard import paired_evidence
-
-        now = int(self.base.now_utc.timestamp() // 60)
-        self.base.load_forecast_guard.records = paired_evidence(now, ml=neural, classic=25, actual=20)
-        self.base.load_forecast_guard_regression.records = paired_evidence(now, ml=regression, classic=25, actual=20)
-
-    def test_earned_regression_survives_non_save_and_replans_on_loss(self):
-        """The real cycle selects regression once, reuses it in comparisons and falls back on loss."""
-        self.configure()
-        self.base.fetch_sensor_data(save=True)
-        self.qualify(neural=26, regression=20)
-        self.configure()
-        self.assertTrue(self.base.fetch_sensor_data(save=True))
-        self.assertEqual(self.base.load_forecast_guard_selected, "regression")
-        self.assertAlmostEqual(self.future_energy(), 0.48)
-        self.assertEqual(len(self.base.load_forecast_array), 1)
-        self.configure()
-        self.base.fetch_sensor_data(save=False)
-        self.assertAlmostEqual(self.future_energy(), 0.48)
-        self.assertIs(self.history.call_args.args[1], self.regression)
-        self.regression = {}
-        self.configure()
-        self.assertTrue(self.base.fetch_sensor_data(save=True))
-        self.assertEqual(self.base.load_forecast_guard_selected, "classic")
-        self.assertAlmostEqual(self.future_energy(), 0.6)
-
-    def test_earned_neural_model_uses_the_real_plan_path(self):
-        """A neural candidate can independently win without regression inheriting its permission."""
-        self.configure()
-        self.base.fetch_sensor_data(save=True)
-        self.qualify(neural=20, regression=26)
-        self.configure()
-        self.assertTrue(self.base.fetch_sensor_data(save=True))
-        self.assertEqual(self.base.load_forecast_guard_selected, "ml")
-        self.assertAlmostEqual(self.future_energy(), 1.2)
-        self.assertTrue(self.base.load_forecast_guard_regression.fallback)
-
-    def test_regression_brief_outage_recovers_without_erasing_earned_permission(self):
-        """Real automatic planning stops immediately on missing Regression and resumes after a short repair."""
-        self.configure()
-        self.base.fetch_sensor_data(save=True)
-        self.qualify(neural=26, regression=20)
-        self.configure()
-        self.base.fetch_sensor_data(save=True)
-        guard = self.base.load_forecast_guard_regression
-        records = copy.deepcopy(guard.records)
-        regression = self.regression
-        self.regression = {}
-        self.base.load_regression_forecast_problem = "model_unavailable"
-        self.configure()
-        self.assertTrue(self.base.fetch_sensor_data(save=True))
-        self.assertEqual(self.base.load_forecast_guard_selected, "classic")
-        self.assertAlmostEqual(self.future_energy(), 0.6)
-        self.assertFalse(guard.fallback)
-        self.base.now_utc += timedelta(minutes=30)
-        self.base.minutes_now += 30
-        self.regression = regression
-        self.configure()
-        self.assertTrue(self.base.fetch_sensor_data(save=True))
-        self.assertEqual(self.base.load_forecast_guard_selected, "regression")
-        self.assertAlmostEqual(self.future_energy(), 0.48)
-        self.assertIsNone(guard.unavailable_since)
-        self.assertIsNone(guard.blocked_since)
-        for row in records:
-            self.assertIn(row, guard.records)
-
-    def test_regression_hard_failure_cannot_resume_from_old_permission(self):
-        """Invalid Regression data withdraws the grant even if a valid curve reappears quickly."""
-        self.configure()
-        self.base.fetch_sensor_data(save=True)
-        self.qualify(neural=26, regression=20)
-        self.configure()
-        self.base.fetch_sensor_data(save=True)
-        regression = self.regression
-        self.regression = {}
-        self.base.load_regression_forecast_problem = "invalid_forecast"
-        self.configure()
-        self.base.fetch_sensor_data(save=True)
-        self.assertTrue(self.base.load_forecast_guard_regression.fallback)
-        self.regression = regression
-        self.configure()
-        self.base.fetch_sensor_data(save=True)
-        self.assertEqual(self.base.load_forecast_guard_selected, "classic")
-
-    def test_earned_regression_calculates_comparison_only_when_a_snapshot_is_due(self):
-        """An earned Regression plan avoids extra five-minute Historical calculations too."""
-        self.configure()
-        self.base.fetch_sensor_data(save=True)
-        self.qualify(neural=26, regression=20)
-        with patch.object(self.base, "compute_load_forecast_history", wraps=self.base.compute_load_forecast_history) as classic:
-            self.configure()
-            self.base.fetch_sensor_data(save=True)
-            self.assertEqual(self.base.load_forecast_guard_selected, "regression")
-            self.assertEqual(classic.call_count, 0)
-            self.base.now_utc += timedelta(minutes=5)
-            self.base.minutes_now += 5
-            self.configure()
-            self.base.fetch_sensor_data(save=True)
-            self.assertEqual(classic.call_count, 0)
-            self.assertIsNone(self.base.load_forecast_guard_classic)
-            self.assertAlmostEqual(self.future_energy(), 0.48)
-            self.base.now_utc += timedelta(hours=1)
-            self.base.minutes_now += 60
-            self.configure()
-            self.base.fetch_sensor_data(save=True)
-            self.assertEqual(classic.call_count, 1)
-
-
 def run_load_forecast_guard_fetch_tests(my_predbat):
     """Run full fetch integration checks through the normal shared-fixture registry."""
     GuardFetchTests.base_fixture = my_predbat
-    suite = unittest.TestSuite(unittest.defaultTestLoader.loadTestsFromTestCase(cls) for cls in (GuardFetchTests, ThreeModelGuardFetchTests))
+    suite = unittest.defaultTestLoader.loadTestsFromTestCase(GuardFetchTests)
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     return not result.wasSuccessful()

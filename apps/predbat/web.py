@@ -3033,8 +3033,8 @@ chart.render();
 
         guard_entity = "select." + self.prefix + "_load_ml_guard_mode"
         source_entities = {
-            "select." + self.prefix + "_load_forecast_source": ("auto", "classic", "ml", "regression"),
-            "select." + self.prefix + "_load_forecast_auto_default": ("classic", "ml", "regression"),
+            "select." + self.prefix + "_load_forecast_source": ("auto", "classic", "ml"),
+            "select." + self.prefix + "_load_forecast_auto_default": ("classic", "ml"),
         }
         guard_submitted = False
         for field in postdata:
@@ -3718,15 +3718,13 @@ chart.render();
 
             # Get ML forecast from load_forecast_ml entity results
             load_ml_forecast = self.get_entity_results("sensor." + self.prefix + "_load_ml_forecast")
-            regression_forecast = self.get_entity_results("sensor." + self.prefix + "_load_regression_forecast") if self.base.get_arg("load_ml_regression_enable", True) else {}
-            historical_forecast = self.get_entity_results("sensor." + self.prefix + "_load_historical_forecast") if self.base.get_arg("load_ml_regression_enable", True) else {}
+            historical_forecast = self.get_entity_results("sensor." + self.prefix + "_load_historical_forecast")
 
             series_data = [
                 {"name": "Load (Actual)", "data": load_today, "opacity": "1.0", "stroke_width": "3", "stroke_curve": "smooth", "color": "#3291a8"},
                 {"name": "Forecast (+1h)", "data": load_today_h1, "opacity": "0.7", "stroke_width": "2", "stroke_curve": "smooth", "color": "#f5a442"},
                 {"name": "Forecast (+8h)", "data": load_today_h8, "opacity": "0.7", "stroke_width": "2", "stroke_curve": "smooth", "color": "#9b59b6"},
                 {"name": "Load (ML Forecast)", "data": load_ml_forecast, "opacity": "1.0", "stroke_width": "3", "stroke_curve": "smooth", "color": "#eb2323"},
-                {"name": "Load (Regression Forecast)", "data": regression_forecast, "opacity": "1.0", "stroke_width": "3", "stroke_curve": "smooth", "color": "#27ae60"},
                 {"name": "Load (Historical Forecast)", "data": historical_forecast, "opacity": "0.8", "stroke_width": "2", "stroke_curve": "smooth", "color": "#3498db"},
             ]
             text += self.render_chart(series_data, "kWh", "ML Load Forecast", now_str)
@@ -4016,21 +4014,19 @@ chart.render();
         raw = raw if isinstance(raw, dict) else {}
         attributes = raw.get("attributes")
         attributes = attributes if isinstance(attributes, dict) else {}
-        three_models = isinstance(attributes.get("models"), list) and "regression" in attributes["models"]
         reason = attributes.get("reason", "")
         reason = reason if isinstance(reason, str) else ""
         source_key = attributes.get("selected_source", "")
         source_key = source_key if isinstance(source_key, str) else ""
         recommendation_key = attributes.get("recommended_source", "")
         recommendation_key = recommendation_key if isinstance(recommendation_key, str) else ""
-        source = {"ml": "LoadML", "regression": "Regression", "classic": "Historical forecast", "external": "External forecast"}.get(source_key, "Awaiting first report")
-        recommendation = {"ml": "LoadML earned selection", "regression": "Regression earned selection", "classic": "Historical forecast"}.get(recommendation_key, "Collecting evidence")
+        source = {"ml": "LoadML", "classic": "Historical", "external": "External forecast"}.get(source_key, "Awaiting first report")
+        recommendation = {"ml": "LoadML earned selection", "classic": "Historical forecast"}.get(recommendation_key, "Collecting evidence")
         headline, tone = "Collecting evidence", "info"
         explanations = {
             "measuring": "Recording forecasts and waiting for their actual consumption. Decisions need results from several days.",
             "historical_preferred": "LoadML has not shown a clear, sustained improvement over the historical forecast on both the 8-hour and 24-hour checks.",
             "ml_earned": "LoadML earned selection by consistently beating historical on both the 8-hour and 24-hour checks. Its accuracy is still being monitored.",
-            "regression_earned": "Regression earned selection by consistently beating historical on both the 8-hour and 24-hour checks. Its accuracy is still being monitored.",
             "within_limits": "No sustained error above the guard limits. The table shows which forecast has been closer to actual load.",
             "ml_worse_than_classic": "LoadML has repeatedly been less accurate than the historical forecast.",
             "classic_unavailable": "The historical forecast cannot be built. Valid ML data is kept instead of replacing it with empty load.",
@@ -4042,8 +4038,6 @@ chart.render();
             headline = "Within guard limits"
         elif reason == "ml_earned":
             headline = "LoadML earned selection"
-        elif reason == "regression_earned":
-            headline = "Regression earned selection"
         elif reason == "historical_preferred":
             headline = "Historical preferred"
         elif reason == "ml_worse_than_classic":
@@ -4065,8 +4059,6 @@ chart.render();
                 explanation += " Automatic mode starts with historical and only permits LoadML after it earns selection. ML must also be enabled as a planning source."
             elif choice == "auto":
                 explanation += " Automatic uses the chosen default while evidence is insufficient, then follows the accuracy checks. Established poor performance overrides a learned default."
-            if three_models:
-                explanation += " Regression can also earn selection. Changing between learned models requires a sustained clear advantage on matched windows."
             selection_kind = attributes.get("selection_kind")
             if selection_kind == "manual":
                 headline, tone = "Manual source selection", "info"
@@ -4100,49 +4092,8 @@ chart.render();
             """A finite, non-negative energy error, or None for missing/malformed scores."""
             return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0 else None
 
-        text = get_load_ml_accuracy_css()
-        text += """<section class="load-accuracy" aria-label="Load forecast accuracy"><h2>Load forecast accuracy</h2>"""
-        text += '<div class="la-status la-{}" role="status">{}</div><p>{}</p>'.format(tone, html_module.escape(headline), html_module.escape(explanation))
-        text += '<div class="la-cards">'
-        mode_control = ""
-        for label, value in (("Mode", {"off": "Off", "monitor": "Monitoring only", "auto": "Automatic fallback"}[mode]), ("Planning source (last report)" if stale else "Planning source", source), ("Guard recommendation", recommendation)):
-            if label == "Mode":
-                field = html_module.escape("select__" + self.prefix + "_load_ml_guard_mode", quote=True)
-                return_chart = chart if chart in ("LoadML", "LoadMLPower") else "LoadML"
-                mode_control += '<label class="la-label" for="load-ml-guard-mode">Accuracy monitoring mode</label><form class="la-mode-form" method="post" action="./config">'
-                mode_control += '<input type="hidden" name="_load_ml_guard_return_chart" value="{}"><select id="load-ml-guard-mode" name="{}">'.format(return_chart, field)
-                for option, title in (("off", "Off"), ("monitor", "Monitoring only"), ("auto", "Automatic fallback")):
-                    mode_control += '<option value="{}"{}>{}</option>'.format(option, " selected" if option == mode else "", title)
-                mode_control += '</select><button type="submit">Apply mode</button></form><small>Guard mode does not enable ML for planning. Monitoring only records comparisons without switching sources; Off stops accuracy recording.</small>'
-                continue
-            text += '<div class="la-card"><span class="la-label">{}</span><strong>{}</strong></div>'.format(html_module.escape(label), html_module.escape(value))
-        text += '</div><div class="la-card la-controls"><form class="la-source-form" method="post" action="./config">'
-        text += '<input type="hidden" name="_load_ml_guard_return_chart" value="{}">'.format(chart if chart in ("LoadML", "LoadMLPower") else "LoadML")
-        text += "<fieldset{}><legend>Planning source choice</legend>".format(" disabled" if mode != "auto" else "")
-        for name, title, options, current in (
-            ("load_forecast_source", "Planning source", tuple(SOURCE_LABELS), choice),
-            ("load_forecast_auto_default", "Default while collecting evidence", DEFAULT_SOURCE_OPTIONS, default),
-        ):
-            field = html_module.escape("select__" + self.prefix + "_" + name, quote=True)
-            text += '<div class="la-source-field"><label for="{0}">{1}</label><select id="{0}" name="{0}">'.format(field, title)
-            for option in options:
-                text += '<option value="{}"{}>{}</option>'.format(option, " selected" if option == current else "", SOURCE_LABELS[option])
-            text += "</select></div>"
-        text += '<button type="submit">Apply source</button></fieldset></form><small>Saved immediately; no restart needed. Accuracy records are kept.</small></div>'
-        if mode != "auto":
-            text += "<p>Select Automatic fallback in Advanced monitoring settings to use the source controls.</p>"
-        text += '<details class="la-help"><summary>How source selection works</summary><p>Used in Automatic fallback mode. Automatic is the default choice; Historical is its initial default. Manual choices bypass accuracy qualification, but never availability checks. Explicit learned choices permit planning without editing apps.yaml; the model must be enabled. The default is used only with Automatic selected. Saved without resetting accuracy records.</p></details>'
-        text += '<details class="la-help"><summary>Advanced monitoring settings</summary>{}</details>'.format(mode_control)
-        text += "<p>Average energy error over the past seven days. Lower is better.</p>"
-        if three_models:
-            text += "<p>All three columns use the same frozen forecast windows and measured household load. Existing neural evidence is retained separately; regression starts its own record.</p>"
-            statuses = attributes.get("candidate_status", {})
-            if isinstance(statuses, dict) and statuses.get("regression") == "model_insufficient_data":
-                text += "<p>Regression is waiting for at least 10 days of complete household history. Historical remains the automatic default.</p>"
-        text += '<div class="la-table"><table><thead><tr><th scope="col">Forecast window</th><th scope="col">LoadML error</th>'
-        if three_models:
-            text += '<th scope="col">Regression error</th>'
-        text += '<th scope="col">Historical error</th><th scope="col">Closer forecast</th></tr></thead><tbody>'
+        rows = []
+        wins = {"LoadML": 0, "Historical": 0}
         for horizon in (1, 8, 24):
             row = scores.get("{}h".format(horizon), {})
             row = row if isinstance(row, dict) else {}
@@ -4151,24 +4102,72 @@ chart.render();
             ml, classic = error_value(row.get("ml_mae_kwh")), error_value(row.get("classic_mae_kwh"))
             ready = count > 0 and ml is not None and classic is not None
             winner = "Waiting for results" if not ready else "Similar" if abs(ml - classic) < 0.005 else "LoadML" if ml < classic else "Historical"
-            ml_text = "{:.2f} kWh".format(ml) if ready else "&mdash;"
-            classic_text = "{:.2f} kWh".format(classic) if ready else "&mdash;"
-            if three_models:
-                reg = error_value(row.get("regression_mae_kwh"))
-                ready = ready and reg is not None
-                values = {"LoadML": ml, "Regression": reg, "Historical": classic} if ready else {}
-                ranked = sorted(values, key=values.get)
-                winner = "Waiting for results" if not ready else "Similar" if values[ranked[1]] - values[ranked[0]] < 0.005 else ranked[0]
-                text += '<tr><th scope="row">{} hour{}<small>{} completed matched windows</small></th>'.format(horizon, "s" if horizon != 1 else "", count)
-                for name in ("LoadML", "Regression", "Historical"):
-                    value = "{:.2f} kWh".format(values[name]) if ready else "&mdash;"
-                    text += '<td class="{}">{}</td>'.format("la-best" if winner == name else "", value)
-                text += "<td>{}</td></tr>".format(winner)
-                continue
-            text += '<tr><th scope="row">{} hour{}<small>{} completed windows</small></th><td class="{}">{}</td><td class="{}">{}</td><td>{}</td></tr>'.format(
-                horizon, "s" if horizon != 1 else "", count, "la-best" if winner == "LoadML" else "", ml_text, "la-best" if winner == "Historical" else "", classic_text, winner
-            )
-        text += '</tbody></table></div><p>Scores appear after each forecast window has elapsed. Hourly windows overlap; automatic fallback uses evidence from separate days. These compare unadjusted household forecasts with later measured load.</p><a href="./log">Open PredBat log</a></section>'
+            if winner in wins:
+                wins[winner] += 1
+            rows.append((horizon, count, ml, classic, ready, winner))
+        completed_checks = sum(row[4] for row in rows)
+        leader = "Collecting evidence"
+        if completed_checks:
+            if wins["LoadML"] == wins["Historical"]:
+                leader = "Similar accuracy" if not sum(wins.values()) else "Mixed results"
+            else:
+                name = max(wins, key=wins.get)
+                leader = "{} · {} of {} checks".format(name, wins[name], completed_checks)
+        if stale:
+            leader = "Awaiting a fresh report"
+        elif mode == "off":
+            leader = "Not reported"
+
+        def icon(paths, colour="green"):
+            """Render a decorative inline icon without remote font dependencies."""
+            return '<svg class="la-icon la-icon-{}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false">{}</svg>'.format(colour, paths)
+
+        icons = (
+            icon('<rect x="4" y="5" width="16" height="16" rx="1"/><path d="M8 2v6m8-6v6M4 10h16m-12 5 3 3 6-6"/>'),
+            icon('<path d="M12 2 3 6v6c0 5 9 10 9 10s9-5 9-10V6l-9-4Z"/><path d="m7 12 3 3 7-7"/>', "blue"),
+            icon('<circle cx="12" cy="12" r="8"/><path d="M12 1v7m0 8v7M1 12h7m8 0h7"/>'),
+        )
+        text = get_load_ml_accuracy_css()
+        text += '<section class="load-accuracy" aria-label="Load forecast accuracy"><div class="la-cards">'
+        for image, label, value in zip(icons, ("Planning source (last report)" if stale else "Planning source", "Guard mode", "Accuracy leader"), (source, {"off": "Off", "monitor": "Monitoring only", "auto": "Automatic fallback"}[mode], leader)):
+            text += '<div class="la-card">{}<div><span class="la-label">{}</span><strong>{}</strong></div></div>'.format(image, html_module.escape(label), html_module.escape(value))
+        text += '</div><div class="la-panel"><div class="la-panel-heading"><h2>Forecast accuracy · Last 7 days</h2>'
+        text += '<details class="la-settings"><summary>Forecast settings</summary><div class="la-settings-body">'
+        text += '<div class="la-status la-{}" role="status">{}</div><p>{}</p>'.format(tone, html_module.escape(headline), html_module.escape(explanation))
+        text += "<p>Guard recommendation: <strong>{}</strong>.</p>".format(html_module.escape(recommendation))
+        text += '<form class="la-source-form" method="post" action="./config">'
+        text += '<input type="hidden" name="_load_ml_guard_return_chart" value="{}">'.format(chart if chart in ("LoadML", "LoadMLPower") else "LoadML")
+        text += "<fieldset{}><legend>Planning source choice</legend>".format(" disabled" if mode != "auto" else "")
+        for name, title, options, current in (
+            ("load_forecast_source", "Planning source", tuple(SOURCE_LABELS), choice),
+            ("load_forecast_auto_default", "Default while collecting evidence", DEFAULT_SOURCE_OPTIONS, default),
+        ):
+            field = html_module.escape("select__" + self.prefix + "_" + name, quote=True)
+            text += '<label for="{0}">{1}</label><select id="{0}" name="{0}">'.format(field, title)
+            for option in options:
+                text += '<option value="{}"{}>{}</option>'.format(option, " selected" if option == current else "", SOURCE_LABELS[option])
+            text += "</select>"
+        text += '<button type="submit">Apply source</button></fieldset></form>'
+        if mode != "auto":
+            text += "<small>Select Automatic fallback to use the planning source controls.</small>"
+        field = html_module.escape("select__" + self.prefix + "_load_ml_guard_mode", quote=True)
+        text += '<form class="la-mode-form" method="post" action="./config"><input type="hidden" name="_load_ml_guard_return_chart" value="{}">'.format(chart if chart in ("LoadML", "LoadMLPower") else "LoadML")
+        text += '<label for="load-ml-guard-mode">Guard mode</label><select id="load-ml-guard-mode" name="{}">'.format(field)
+        for option, title in (("off", "Off"), ("monitor", "Monitoring only"), ("auto", "Automatic fallback")):
+            text += '<option value="{}"{}>{}</option>'.format(option, " selected" if option == mode else "", title)
+        text += '</select><button type="submit">Apply mode</button></form>'
+        text += "<small>Saved immediately; no restart needed. Accuracy records are kept.</small>"
+        text += '<details class="la-help"><summary>How selection works</summary><p>Automatic follows the accuracy checks. Its initial default is Historical. A learned default is provisional; established poor performance overrides it. Manual choices bypass accuracy qualification, but never availability checks. Guard mode does not enable ML for planning. The model must be enabled. Monitoring only records comparisons without switching sources; Off stops accuracy recording.</p>'
+        text += "<p>The accuracy leader summarises the lower average errors in the table. Automatic selection requires sustained evidence on both the 8-hour and 24-hour checks. Hourly windows overlap. Scores compare unadjusted household forecasts with later measured consumption.</p></details></div></details></div>"
+        if stale or tone == "warning" or mode == "off" or attributes.get("selection_kind") in ("manual", "automatic_default"):
+            text += '<p class="la-alert la-{}">{}: {}</p>'.format(tone, html_module.escape(headline), html_module.escape(explanation))
+        text += '<div class="la-table"><table><thead><tr><th scope="col">Window</th><th scope="col">LoadML error</th><th scope="col">Historical error</th><th scope="col">Closer forecast</th></tr></thead><tbody>'
+        for horizon, count, ml, classic, ready, winner in rows:
+            text += '<tr><th scope="row">{} hour{}<small>{} completed windows</small></th>'.format(horizon, "s" if horizon != 1 else "", count)
+            for name, value in (("LoadML", ml), ("Historical", classic)):
+                text += '<td class="{}">{}</td>'.format("la-best" if winner == name else "", "{:.2f} kWh".format(value) if ready else "&mdash;")
+            text += '<td><span class="{}">{}</span></td></tr>'.format("la-winner" if winner in wins else "la-neutral", winner)
+        text += '</tbody></table></div><div class="la-footer"><span>ⓘ Lower error is better · 7-day average (kWh)</span><a href="./log">Open PredBat log ↗</a></div></div></section>'
         return text
 
     async def html_charts(self, request):
@@ -4204,9 +4203,12 @@ chart.render();
 
         if chart in ("LoadML", "LoadMLPower"):
             text += self.get_load_ml_accuracy_html(chart)
-        if chart not in ("MarginalCosts", "Curves", "PVCalibration", "PVAccuracy"):
-            text += '<div id="chart"></div>'
-        text += self.get_chart(chart=chart)
+        if chart in ("LoadML", "LoadMLPower"):
+            text += '<div class="load-forecast-chart"><div id="chart"></div>' + self.get_chart(chart=chart) + "</div>"
+        else:
+            if chart not in ("MarginalCosts", "Curves", "PVCalibration", "PVAccuracy"):
+                text += '<div id="chart"></div>'
+            text += self.get_chart(chart=chart)
         text += "</body></html>\n"
         return web.Response(content_type="text/html", text=text)
 

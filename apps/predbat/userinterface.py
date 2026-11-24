@@ -1521,6 +1521,12 @@ class UserInterface:
             if ha_value is None:
                 ha_value = item.get("default", None)
 
+            # Retired source selections must not be added back into the native select options.
+            if ha_value == "regression" and name in ("load_forecast_source", "load_forecast_auto_default"):
+                ha_value = "auto" if name == "load_forecast_source" else "classic"
+                if item.get("default") == "regression":
+                    item["default"] = ha_value
+
             # Switch convert to text
             if type == "switch" and isinstance(ha_value, str):
                 if ha_value.lower() in ["on", "true", "enable"]:

@@ -3150,7 +3150,7 @@ APPS_SCHEMA = {
     "load_power_fill_enable": {"type": "boolean"},
     "load_history_fill_enable": {"type": "boolean"},
     "load_ml_enable": {"type": "boolean"},
-    "load_ml_regression_enable": {"type": "boolean"},
+    "load_ml_regression_enable": {"type": "boolean", "description": "Deprecated: Regression has been removed; this setting is ignored"},
     "load_ml_guard_mode": {"type": "string"},
     "load_forecast_source": {"type": "string"},
     "load_forecast_auto_default": {"type": "string"},
