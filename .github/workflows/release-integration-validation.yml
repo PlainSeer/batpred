@@ -1,4 +1,5 @@
 name: Release integration validation
+# Validation-only workflow; candidate application source remains unchanged.
 on:
   push:
     branches: [review/predbat-v9.10.0-accuracy-20261124]
