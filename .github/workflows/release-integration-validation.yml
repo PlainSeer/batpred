@@ -1,0 +1,35 @@
+name: Release integration validation
+on:
+  push:
+    branches: [review/predbat-v9.10.0-accuracy-20261124]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.14"
+        cache: pip
+        cache-dependency-path: requirements.txt
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    - name: Review changed text formatting
+      run: pre-commit run --all-files
+    - name: Build prediction kernel
+      run: bash apps/predbat/build_kernel.sh
+    - name: Run full quick suite including forecast accuracy addon
+      env:
+        PREDBAT_KERNEL_REQUIRED: "1"
+      run: |
+        cd coverage
+        python3 ../apps/predbat/unit_test.py --quick
+    - name: Verify released x86 kernel
+      run: |
+        cd coverage
+        python3 ../apps/predbat/verify_kernel_binary.py ../apps/predbat/prediction_kernel_lib_x86_64.so
