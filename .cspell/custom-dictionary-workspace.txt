@@ -284,6 +284,7 @@ frombuffer
 fromisoformat
 fronius
 frozenlist
+fsmonitor
 funcs
 futurerate
 gaierror
@@ -487,6 +488,7 @@ Mosquitto
 mousedown
 mpan
 mpans
+mpip
 mppt
 mprn
 mpxn
@@ -806,6 +808,10 @@ tzdata
 tzfile
 tzpath
 tzset
+udfff
+ufeff
+ufffe
+uffff
 unasserted
 uncalibrated
 uncancellable
